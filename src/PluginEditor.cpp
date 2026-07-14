@@ -8,9 +8,15 @@ namespace
     constexpr int textBoxHeight = 20;
     constexpr int labelHeight = 20;
     constexpr int margin = 20;
-    constexpr int numKnobs = 3;
-    constexpr int editorWidth = margin * 2 + numKnobs * knobSize + (numKnobs - 1) * margin;
-    constexpr int editorHeight = margin * 2 + labelHeight + knobSize + textBoxHeight;
+    constexpr int toggleHeight = 24;
+
+    constexpr int numRow1Knobs = 4; // Width, Bass Mono, Low Width, Output
+    constexpr int numRow2Controls = 3; // Auto Mono Safety, Haas Mode, Haas Time
+
+    constexpr int editorWidth = margin * 2 + numRow1Knobs * knobSize + (numRow1Knobs - 1) * margin;
+    constexpr int row1Height = labelHeight + knobSize + textBoxHeight;
+    constexpr int row2Height = knobSize; // tallest row-2 control (the Haas Time knob)
+    constexpr int editorHeight = margin * 3 + row1Height + row2Height;
 }
 
 FirmamentAudioProcessorEditor::FirmamentAudioProcessorEditor (FirmamentAudioProcessor& processorToEdit)
@@ -19,7 +25,12 @@ FirmamentAudioProcessorEditor::FirmamentAudioProcessorEditor (FirmamentAudioProc
 {
     configureKnob (widthKnob, ParamIDs::width, "Width");
     configureKnob (bassMonoKnob, ParamIDs::bassMonoFreq, "Bass Mono");
+    configureKnob (lowWidthKnob, ParamIDs::lowWidth, "Low Width");
     configureKnob (outputKnob, ParamIDs::output, "Output");
+
+    configureToggle (autoMonoSafetyToggle, ParamIDs::autoMonoSafety, "Auto Mono Safety");
+    configureToggle (haasEnabledToggle, ParamIDs::haasEnabled, "Haas Mode");
+    configureKnob (haasTimeKnob, ParamIDs::haasTimeMs, "Haas Time");
 
     setResizable (false, false);
     setSize (editorWidth, editorHeight);
@@ -44,13 +55,37 @@ void FirmamentAudioProcessorEditor::configureKnob (Knob& knob, const juce::Strin
     knob.attachment = std::make_unique<SliderAttachment> (audioProcessor.apvts, parameterId, knob.slider);
 }
 
+void FirmamentAudioProcessorEditor::configureToggle (Toggle& toggle, const juce::String& parameterId, const juce::String& labelText)
+{
+    toggle.button.setButtonText (labelText);
+    addAndMakeVisible (toggle.button);
+
+    toggle.attachment = std::make_unique<ButtonAttachment> (audioProcessor.apvts, parameterId, toggle.button);
+}
+
 void FirmamentAudioProcessorEditor::resized()
 {
     auto bounds = getLocalBounds().reduced (margin);
-    bounds.removeFromTop (labelHeight); // room for the attached labels above each knob
 
-    const auto slotWidth = bounds.getWidth() / numKnobs;
+    auto row1 = bounds.removeFromTop (row1Height);
+    row1.removeFromTop (labelHeight); // room for the attached labels above each knob
 
-    for (auto* knob : { &widthKnob, &bassMonoKnob, &outputKnob })
-        knob->slider.setBounds (bounds.removeFromLeft (slotWidth).reduced (margin / 2, 0));
+    const auto row1SlotWidth = row1.getWidth() / numRow1Knobs;
+
+    for (auto* knob : { &widthKnob, &bassMonoKnob, &lowWidthKnob, &outputKnob })
+        knob->slider.setBounds (row1.removeFromLeft (row1SlotWidth).reduced (margin / 2, 0));
+
+    bounds.removeFromTop (margin);
+
+    auto row2 = bounds.removeFromTop (row2Height);
+    const auto row2SlotWidth = row2.getWidth() / numRow2Controls;
+
+    auto autoMonoSlot = row2.removeFromLeft (row2SlotWidth).reduced (margin / 2, 0);
+    autoMonoSafetyToggle.button.setBounds (autoMonoSlot.withSizeKeepingCentre (autoMonoSlot.getWidth(), toggleHeight));
+
+    auto haasEnabledSlot = row2.removeFromLeft (row2SlotWidth).reduced (margin / 2, 0);
+    haasEnabledToggle.button.setBounds (haasEnabledSlot.withSizeKeepingCentre (haasEnabledSlot.getWidth(), toggleHeight));
+
+    auto haasTimeSlot = row2.removeFromLeft (row2SlotWidth).reduced (margin / 2, 0);
+    haasTimeKnob.slider.setBounds (haasTimeSlot);
 }

@@ -54,6 +54,14 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // The most recent block's correlation/phase estimate of the plugin's
+    // input (see FirmamentEngine::getCorrelationValue()), refreshed from the
+    // engine at the end of every processBlock() call. Safe to read from any
+    // thread. Not yet consumed by the GUI - the v0.1 editor is a placeholder
+    // (see PluginEditor.*); wiring an actual meter widget to this value is
+    // M3 (GUI & accessibility) scope, not M1.
+    float getCorrelationMeterValue() const noexcept { return correlationMeterValue.load (std::memory_order_relaxed); }
+
 private:
     FirmamentEngine engine;
 
@@ -61,8 +69,14 @@ private:
     // once at construction time so processBlock() never has to search for
     // them (no allocation/locks on the audio thread).
     std::atomic<float>* widthPercent = nullptr;
+    std::atomic<float>* lowWidthPercent = nullptr;
     std::atomic<float>* bassMonoFreqHz = nullptr;
+    std::atomic<float>* autoMonoSafetyEnabled = nullptr;
+    std::atomic<float>* haasEnabled = nullptr;
+    std::atomic<float>* haasTimeMs = nullptr;
     std::atomic<float>* outputDb = nullptr;
+
+    std::atomic<float> correlationMeterValue { 0.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FirmamentAudioProcessor)
 };

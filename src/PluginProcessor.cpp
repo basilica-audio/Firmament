@@ -11,11 +11,19 @@ FirmamentAudioProcessor::FirmamentAudioProcessor()
       apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
 {
     widthPercent = apvts.getRawParameterValue (ParamIDs::width);
+    lowWidthPercent = apvts.getRawParameterValue (ParamIDs::lowWidth);
     bassMonoFreqHz = apvts.getRawParameterValue (ParamIDs::bassMonoFreq);
+    autoMonoSafetyEnabled = apvts.getRawParameterValue (ParamIDs::autoMonoSafety);
+    haasEnabled = apvts.getRawParameterValue (ParamIDs::haasEnabled);
+    haasTimeMs = apvts.getRawParameterValue (ParamIDs::haasTimeMs);
     outputDb = apvts.getRawParameterValue (ParamIDs::output);
 
     jassert (widthPercent != nullptr);
+    jassert (lowWidthPercent != nullptr);
     jassert (bassMonoFreqHz != nullptr);
+    jassert (autoMonoSafetyEnabled != nullptr);
+    jassert (haasEnabled != nullptr);
+    jassert (haasTimeMs != nullptr);
     jassert (outputDb != nullptr);
 }
 
@@ -89,7 +97,11 @@ void FirmamentAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     // after prepareToPlay() already reflects the host/session's actual
     // parameter values rather than the engine's built-in defaults.
     engine.setWidthPercent (widthPercent->load (std::memory_order_relaxed));
+    engine.setLowWidthPercent (lowWidthPercent->load (std::memory_order_relaxed));
     engine.setBassMonoFrequencyHz (bassMonoFreqHz->load (std::memory_order_relaxed));
+    engine.setAutoMonoSafetyEnabled (autoMonoSafetyEnabled->load (std::memory_order_relaxed) > 0.5f);
+    engine.setHaasEnabled (haasEnabled->load (std::memory_order_relaxed) > 0.5f);
+    engine.setHaasTimeMs (haasTimeMs->load (std::memory_order_relaxed));
     engine.setOutputDb (outputDb->load (std::memory_order_relaxed));
 
     engine.prepare (spec);
@@ -153,11 +165,19 @@ void FirmamentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         buffer.copyFrom (channel, 0, buffer, 0, 0, buffer.getNumSamples());
 
     engine.setWidthPercent (widthPercent->load (std::memory_order_relaxed));
+    engine.setLowWidthPercent (lowWidthPercent->load (std::memory_order_relaxed));
     engine.setBassMonoFrequencyHz (bassMonoFreqHz->load (std::memory_order_relaxed));
+    engine.setAutoMonoSafetyEnabled (autoMonoSafetyEnabled->load (std::memory_order_relaxed) > 0.5f);
+    engine.setHaasEnabled (haasEnabled->load (std::memory_order_relaxed) > 0.5f);
+    engine.setHaasTimeMs (haasTimeMs->load (std::memory_order_relaxed));
     engine.setOutputDb (outputDb->load (std::memory_order_relaxed));
 
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);
+
+    // Refresh the correlation/phase meter value for any reader (see
+    // getCorrelationMeterValue()) - a plain atomic store, real-time-safe.
+    correlationMeterValue.store (engine.getCorrelationValue(), std::memory_order_relaxed);
 }
 
 //==============================================================================
