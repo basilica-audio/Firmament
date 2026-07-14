@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/icon.png" alt="Firmament icon" width="120"/></p>
+
 # Firmament — User Manual
 
 *Open the heavens — a stereo widener and imager for lush symphonic layers.*
