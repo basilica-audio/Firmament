@@ -27,4 +27,36 @@ namespace ParamIDs
 
     // Output trim, applied after M/S decode back to L/R.
     inline constexpr auto output = "output";
+
+    // M1 additions below (added post-v0.1 bootstrap, still pre-1.0 - IDs are
+    // permanent from the moment they ship in a tagged release, same rule as
+    // the three above).
+
+    // Width scale (0-200%, same convention as `width`) applied to the Side
+    // band *below* the BassMonoFreq crossover, independently of `width`
+    // (which - when the crossover is engaged - now applies only to the band
+    // *above* it). Only audible while bassMonoFreq > 0; default 0% exactly
+    // reproduces the v0.1 "bass mono forces the low band to silence"
+    // behaviour, so existing sessions/presets are unaffected. See
+    // FirmamentEngine's multiband-width comments and docs/architecture.md.
+    inline constexpr auto lowWidth = "lowWidth";
+
+    // Auto Mono Safety: on/off. When engaged, a running correlation estimate
+    // of the plugin's input (see `correlation` discussion in
+    // FirmamentEngine.h) is used to automatically attenuate the Side channel
+    // when the input is heavily out-of-phase, independent of the Width/Low
+    // Width settings - a safety net against a widened signal collapsing
+    // destructively on mono fold-down. Off by default (v0.1 behaviour is
+    // unchanged unless explicitly enabled).
+    inline constexpr auto autoMonoSafety = "autoMonoSafety";
+
+    // Haas Mode: on/off. When engaged, the Right channel is delayed by
+    // HaasTimeMs relative to Left (after M/S decode), trading the M/S
+    // width-scaling model's exact mono-sum guarantee for a stronger,
+    // psychoacoustic (precedence-effect) sense of width. Off by default.
+    inline constexpr auto haasEnabled = "haasEnabled";
+
+    // Haas Mode delay time in milliseconds (0-40 ms), only audible while
+    // haasEnabled is on.
+    inline constexpr auto haasTimeMs = "haasTimeMs";
 }

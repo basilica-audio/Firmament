@@ -39,6 +39,44 @@ namespace frmm
             0.0f,
             juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
+        //======================================================================
+        // M1 additions below - see ParameterIds.h for the full rationale of
+        // each. All default to values that reproduce the v0.1 signal path
+        // exactly (Low Width 0%, Auto Mono Safety off, Haas Mode off), so
+        // existing behaviour/tests are unaffected unless a user or preset
+        // opts in.
+
+        // Low Width: independent width scale for the band below
+        // BassMonoFreq, 0-200%, default 0% (matches the v0.1 "bass mono"
+        // behaviour of forcing that band to mono).
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::lowWidth, 1 },
+            "Low Width",
+            juce::NormalisableRange<float> (0.0f, 200.0f, 0.1f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        // Auto Mono Safety: off by default.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::autoMonoSafety, 1 },
+            "Auto Mono Safety",
+            false));
+
+        // Haas Mode: off by default.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::haasEnabled, 1 },
+            "Haas Mode",
+            false));
+
+        // Haas Time: 0-40 ms, default 20 ms (a typical precedence-effect
+        // sweet spot - audibly wide without reading as a discrete echo).
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::haasTimeMs, 1 },
+            "Haas Time",
+            juce::NormalisableRange<float> (0.0f, 40.0f, 0.01f),
+            20.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("ms")));
+
         return layout;
     }
 }

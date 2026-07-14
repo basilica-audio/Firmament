@@ -17,6 +17,19 @@ namespace
         const auto maxHz = juce::jmax (5.0f, nyquist * 0.9f);
         return juce::jlimit (5.0f, maxHz, frequencyHz);
     }
+
+    // Small floor added under the correlation denominator so a silent (or
+    // near-silent) input never produces a divide-by-zero/NaN correlation
+    // estimate - with both sums at (near) zero this yields a well-defined
+    // ~0 (uncorrelated) rather than NaN.
+    constexpr double correlationEpsilon = 1.0e-12;
+
+    // Auto Mono Safety's minimum Side gain, applied when the running
+    // correlation estimate reaches fully out-of-phase (-1.0). Chosen to
+    // audibly rein in a collapsing mono sum without ever fully muting Side
+    // (which would be a much more drastic, surprising behaviour than a
+    // "safety" feature should have).
+    constexpr float autoMonoSafetyFloorGain = 0.35f;
 }
 
 FirmamentEngine::FirmamentEngine() = default;
@@ -34,8 +47,23 @@ void FirmamentEngine::prepare (const juce::dsp::ProcessSpec& spec)
     outputGain.setRampDurationSeconds (smoothingTimeSeconds);
     outputGain.prepare (spec);
 
+    // Haas Mode's delay line likewise only ever touches one derived stream
+    // (the decoded Right channel), so it is prepared mono too. The maximum
+    // delay is sized from maxHaasTimeMs with a small integer-sample margin;
+    // setMaximumDelayInSamples() reallocates, so this only ever runs from
+    // prepare() (message thread), never from process().
+    haasDelayLine.prepare (monoSpec);
+    const auto maxHaasSamples = static_cast<int> (std::ceil ((maxHaasTimeMs / 1000.0) * sampleRate)) + 4;
+    haasDelayLine.setMaximumDelayInSamples (maxHaasSamples);
+
     widthSmoothed.reset (sampleRate, smoothingTimeSeconds);
     widthSmoothed.setCurrentAndTargetValue (lastWidthPercent * 0.01f);
+
+    lowWidthSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    lowWidthSmoothed.setCurrentAndTargetValue (lastLowWidthPercent * 0.01f);
+
+    haasTimeMsSmoothed.reset (sampleRate, smoothingTimeSeconds);
+    haasTimeMsSmoothed.setCurrentAndTargetValue (lastHaasTimeMs);
 
     // Seed the frequency smoother with a safe, strictly-positive value even
     // while bass-mono is off, so that if it is engaged later mid-stream the
@@ -46,6 +74,13 @@ void FirmamentEngine::prepare (const juce::dsp::ProcessSpec& spec)
     const auto seedFrequencyHz = lastBassMonoHz > 0.0f ? juce::jmax (5.0f, lastBassMonoHz) : 20.0f;
     bassMonoFrequencySmoothed.reset (sampleRate, smoothingTimeSeconds);
     bassMonoFrequencySmoothed.setCurrentAndTargetValue (clampBelowNyquist (seedFrequencyHz, sampleRate));
+
+    // 200 ms one-pole leaky-integrator coefficient for the correlation
+    // meter/Auto Mono Safety estimate - see the class-level comment in
+    // FirmamentEngine.h.
+    correlationSmoothingCoeff = sampleRate > 0.0
+                                     ? std::exp (-1.0 / (sampleRate * correlationTimeConstantSeconds))
+                                     : 0.0;
 
     reset();
 
@@ -60,12 +95,24 @@ void FirmamentEngine::reset()
 {
     bassMonoCrossover.reset();
     outputGain.reset();
+    haasDelayLine.reset();
+
+    correlationSumLR = 0.0;
+    correlationSumLL = 0.0;
+    correlationSumRR = 0.0;
+    lastCorrelation = 0.0f;
 }
 
 void FirmamentEngine::setWidthPercent (float newWidthPercent)
 {
     lastWidthPercent = newWidthPercent;
     widthSmoothed.setTargetValue (newWidthPercent * 0.01f);
+}
+
+void FirmamentEngine::setLowWidthPercent (float newLowWidthPercent)
+{
+    lastLowWidthPercent = newLowWidthPercent;
+    lowWidthSmoothed.setTargetValue (newLowWidthPercent * 0.01f);
 }
 
 void FirmamentEngine::setBassMonoFrequencyHz (float newFrequencyHz)
@@ -76,6 +123,22 @@ void FirmamentEngine::setBassMonoFrequencyHz (float newFrequencyHz)
     // process() gates the whole crossover stage on lastBassMonoHz > 0.
     if (newFrequencyHz > 0.0f)
         bassMonoFrequencySmoothed.setTargetValue (juce::jmax (5.0f, newFrequencyHz));
+}
+
+void FirmamentEngine::setAutoMonoSafetyEnabled (bool shouldBeEnabled)
+{
+    lastAutoMonoSafetyEnabled = shouldBeEnabled;
+}
+
+void FirmamentEngine::setHaasEnabled (bool shouldBeEnabled)
+{
+    lastHaasEnabled = shouldBeEnabled;
+}
+
+void FirmamentEngine::setHaasTimeMs (float newHaasTimeMs)
+{
+    lastHaasTimeMs = newHaasTimeMs;
+    haasTimeMsSmoothed.setTargetValue (newHaasTimeMs);
 }
 
 void FirmamentEngine::setOutputDb (float newOutputDb)
@@ -99,6 +162,8 @@ void FirmamentEngine::process (juce::dsp::AudioBlock<float>& block) noexcept
         return;
 
     const bool bassMonoEnabled = lastBassMonoHz > 0.0f;
+    const bool autoMonoSafetyEnabled = lastAutoMonoSafetyEnabled;
+    const bool haasEnabled = lastHaasEnabled;
 
     // Coefficient recomputation involves a tan() call, so - like Overture's
     // Tight/Tone filters - the crossover frequency is smoothed and re-derived
@@ -109,14 +174,39 @@ void FirmamentEngine::process (juce::dsp::AudioBlock<float>& block) noexcept
         bassMonoCrossover.setCutoffFrequency (freqHz);
     }
 
+    // Haas Mode's delay time is likewise re-derived once per block rather
+    // than per sample (there is no audible benefit to sample-accurate
+    // updates for a manually-set widening parameter, and DelayLine::
+    // setDelay() is cheap regardless). The smoother always advances, even
+    // while Haas Mode is off, so re-enabling it later starts from an
+    // up-to-date value instead of an initial 20 ms default; the delay line
+    // itself is pinned to 0 samples while disabled (see the per-sample loop
+    // below), so this has no audible effect until Haas Mode is engaged.
+    const auto haasMs = haasTimeMsSmoothed.skip (static_cast<int> (numSamples));
+
+    if (haasEnabled)
+    {
+        const auto maxDelaySamples = static_cast<float> (haasDelayLine.getMaximumDelayInSamples());
+        const auto delaySamples = juce::jlimit (0.0f, maxDelaySamples, haasMs * 0.001f * static_cast<float> (sampleRate));
+        haasDelayLine.setDelay (delaySamples);
+    }
+    else
+    {
+        haasDelayLine.setDelay (0.0f);
+    }
+
     auto* left = block.getChannelPointer (0);
     auto* right = block.getChannelPointer (1);
 
     for (size_t i = 0; i < numSamples; ++i)
     {
-        // Width is a plain multiplicative scale with no coefficients to
-        // recompute, so it is cheap enough to interpolate sample-accurately.
+        // Width/Low Width are plain multiplicative scales with no
+        // coefficients to recompute, so they are cheap enough to interpolate
+        // sample-accurately; Low Width is only audible while the bass-mono
+        // crossover is engaged (see below) but is always advanced so it is
+        // caught up with its target the instant the crossover is enabled.
         const auto widthProportion = widthSmoothed.getNextValue();
+        const auto lowWidthProportion = lowWidthSmoothed.getNextValue();
 
         // A single NaN/Inf input sample must never be allowed to reach the
         // bass-mono crossover: unlike a feedforward gain stage, an IIR
@@ -129,26 +219,78 @@ void FirmamentEngine::process (juce::dsp::AudioBlock<float>& block) noexcept
         const auto leftSample = std::isfinite (left[i]) ? left[i] : 0.0f;
         const auto rightSample = std::isfinite (right[i]) ? right[i] : 0.0f;
 
+        // Correlation meter / Auto Mono Safety: a leaky-integrated running
+        // estimate of the plugin's *input* L/R correlation, updated every
+        // sample regardless of whether Auto Mono Safety is enabled, so it is
+        // always current for getCorrelationValue() (a future GUI meter).
+        // Deriving it from the raw scrubbed input (rather than the Width-
+        // scaled output) keeps it a direct read of the source material's
+        // own mono-compatibility risk and avoids any feedback loop with the
+        // Side scaling computed from it below.
+        const auto coeff = correlationSmoothingCoeff;
+        correlationSumLR = coeff * correlationSumLR + (1.0 - coeff) * (static_cast<double> (leftSample) * static_cast<double> (rightSample));
+        correlationSumLL = coeff * correlationSumLL + (1.0 - coeff) * (static_cast<double> (leftSample) * static_cast<double> (leftSample));
+        correlationSumRR = coeff * correlationSumRR + (1.0 - coeff) * (static_cast<double> (rightSample) * static_cast<double> (rightSample));
+
         const auto encoded = MidSideCodec::encode (leftSample, rightSample);
-        auto side = encoded.side * widthProportion;
+        float side;
 
         if (bassMonoEnabled)
         {
-            // Discarding the low band and keeping only the high band is
-            // exactly "Side == 0 below the crossover frequency" (the two
-            // bands sum to the input, by construction of the Linkwitz-Riley
-            // TPT structure), which is what forces the low end to mono once
-            // decoded back to L/R below.
+            // Splitting the *unscaled* Side signal into low/high bands and
+            // scaling each independently before summing commutes exactly
+            // with scale-then-filter (both are linear operations), so at the
+            // default Low Width of 0% - where the low band contributes
+            // nothing regardless of its content - this reproduces the v0.1
+            // "bass mono forces the low band to silence" behaviour precisely.
+            // At any other Low Width the recombined result is NOT a null/
+            // identity operation even when Low Width == Width - see the
+            // class-level comment in FirmamentEngine.h for why (the
+            // crossover's low+high sum is a flat-magnitude allpass, not the
+            // original signal, per JUCE's own documentation).
             float lowBand = 0.0f;
             float highBand = 0.0f;
-            bassMonoCrossover.processSample (0, side, lowBand, highBand);
-            side = highBand;
+            bassMonoCrossover.processSample (0, encoded.side, lowBand, highBand);
+            side = lowBand * lowWidthProportion + highBand * widthProportion;
+        }
+        else
+        {
+            // Single-band mode (crossover off): Width alone scales the whole
+            // Side signal, exactly as in v0.1.
+            side = encoded.side * widthProportion;
+        }
+
+        if (autoMonoSafetyEnabled)
+        {
+            const auto denominator = std::sqrt (correlationSumLL * correlationSumRR + correlationEpsilon);
+            const auto correlationEstimate = static_cast<float> (juce::jlimit (-1.0, 1.0, correlationSumLR / denominator));
+
+            // Full Side gain while the input is in-phase or uncorrelated
+            // (correlation >= 0); linearly rein it in toward
+            // autoMonoSafetyFloorGain as correlation approaches -1 (fully
+            // out-of-phase) - a safety net against a widened signal
+            // collapsing destructively on mono fold-down. This only ever
+            // scales Side, so - like Width/Low Width - it never touches Mid
+            // and cannot break the L + R == 2 * Mid mono-sum invariant.
+            const auto safetyGain = correlationEstimate >= 0.0f
+                                         ? 1.0f
+                                         : juce::jmap (correlationEstimate, -1.0f, 0.0f, autoMonoSafetyFloorGain, 1.0f);
+            side *= safetyGain;
         }
 
         const auto decoded = MidSideCodec::decode (encoded.mid, side);
+
         left[i] = decoded.left;
-        right[i] = decoded.right;
+
+        // Haas Mode: the delay line is always pushed/popped, even while
+        // disabled (delay pinned to 0 samples above), so it is a bit-exact
+        // passthrough when off and re-enabling it mid-stream never starts
+        // from stale/discontinuous buffered history.
+        haasDelayLine.pushSample (0, decoded.right);
+        right[i] = haasDelayLine.popSample (0);
     }
+
+    lastCorrelation = static_cast<float> (juce::jlimit (-1.0, 1.0, correlationSumLR / std::sqrt (correlationSumLL * correlationSumRR + correlationEpsilon)));
 
     juce::dsp::ProcessContextReplacing<float> context (block);
     outputGain.process (context);
