@@ -57,15 +57,16 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     {
         static constexpr const char* allIds[] = {
             ParamIDs::width, ParamIDs::bassMonoFreq, ParamIDs::output,
+            ParamIDs::lowWidth, ParamIDs::autoMonoSafety, ParamIDs::haasEnabled, ParamIDs::haasTimeMs,
         };
 
         for (const auto* id : allIds)
             CHECK (apvts.getParameter (id) != nullptr);
     }
 
-    SECTION ("total parameter count matches the v0.1 layout")
+    SECTION ("total parameter count matches the M1 layout")
     {
-        CHECK (apvts.processor.getParameters().size() == 3);
+        CHECK (apvts.processor.getParameters().size() == 7);
     }
 
     SECTION ("Width: M/S width scale defaults and range")
@@ -84,5 +85,31 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     {
         checkFloatDefault (apvts, ParamIDs::output, 0.0f);
         checkFloatRange (apvts, ParamIDs::output, -24.0f, 24.0f);
+    }
+
+    SECTION ("Low Width: multiband low-band width scale defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::lowWidth, 0.0f);
+        checkFloatRange (apvts, ParamIDs::lowWidth, 0.0f, 200.0f);
+    }
+
+    SECTION ("Auto Mono Safety: bool parameter defaults off")
+    {
+        auto* param = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (ParamIDs::autoMonoSafety));
+        REQUIRE (param != nullptr);
+        CHECK (param->get() == false);
+    }
+
+    SECTION ("Haas Mode: bool parameter defaults off")
+    {
+        auto* param = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (ParamIDs::haasEnabled));
+        REQUIRE (param != nullptr);
+        CHECK (param->get() == false);
+    }
+
+    SECTION ("Haas Time: defaults and range")
+    {
+        checkFloatDefault (apvts, ParamIDs::haasTimeMs, 20.0f);
+        checkFloatRange (apvts, ParamIDs::haasTimeMs, 0.0f, 40.0f);
     }
 }
