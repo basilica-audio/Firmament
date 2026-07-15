@@ -2,15 +2,15 @@
 
 # Firmament — User Manual
 
-*Open the heavens — a stereo widener and imager for lush symphonic layers.*
+*Open the heavens — a stereo widener and imager for lush orchestral layers.*
 
 ## What Firmament is
 
-Firmament is a Mid/Side stereo widener and imager. It is one of the twelve plugins in the **Metal up your ass** symphonic-metal suite, and its job in that suite (and in any mix) is to take content that already has stereo information - strings, choirs, synth pads, doubled/layered guitars, ambience returns - and control how wide it feels, without ever compromising how the mix folds down to mono (club PA, phone speaker, a broadcast mono-check, a bass player checking their part in mono).
+Firmament is a Mid/Side stereo widener and imager. It is one of the twelve plugins in the **Basilica Audio** heavy-music suite, and its job in that suite (and in any mix) is to take content that already has stereo information - strings, choirs, synth pads, doubled/layered guitars, ambience returns - and control how wide it feels, without ever compromising how the mix folds down to mono (club PA, phone speaker, a broadcast mono-check, a bass player checking their part in mono).
 
 Firmament does not create stereo width out of a genuinely mono signal by itself (Width and Low Width can only scale what stereo difference is already present in the input) - the one exception is **Haas Mode**, which *can* create a sense of width from mono-compatible material by delaying one channel, at the cost of the exact mono-sum guarantee the rest of the plugin provides (see below).
 
-## Where it sits in a symphonic-metal chain
+## Where it sits in a heavy production chain
 
 Firmament is a **width/imaging** tool, which places it toward the back end of a channel or bus chain, after tone-shaping and dynamics have already been decided:
 
@@ -18,7 +18,7 @@ Firmament is a **width/imaging** tool, which places it toward the back end of a 
 2. **Firmament** - decide how wide it should feel, once the tone is set.
 3. **Reverb/delay sends, final bus processing** - width decisions made before verb affect how the reverb tail itself is perceived; some engineers prefer to widen after the reverb return instead, which is a valid alternative depending on the source.
 
-Typical placements in a symphonic-metal production:
+Typical placements in a heavy-music production:
 
 - **String/choir/pad busses** - the primary use case. Push Width up to open the orchestral/choral layers without smearing the guitars/bass/kick that share the mix.
 - **Doubled rhythm guitar bus** - a gentler touch (Width 110-140%) can glue two already-panned doubles into a single, wider-feeling wall without the extreme "hyped" artifacts of some stereo wideners, because Firmament never adds anything that wasn't already in the stereo image (again, aside from Haas Mode).

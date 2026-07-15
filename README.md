@@ -2,9 +2,9 @@
 
 # Firmament
 
-*Open the heavens — a stereo widener and imager for lush symphonic layers.*
+*Open the heavens — a stereo widener and imager for lush orchestral layers.*
 
-[![CI](https://github.com/metal-up-your-ass/firmament/actions/workflows/ci.yml/badge.svg)](https://github.com/metal-up-your-ass/firmament/actions/workflows/ci.yml)
+[![CI](https://github.com/basilica-audio/firmament/actions/workflows/ci.yml/badge.svg)](https://github.com/basilica-audio/firmament/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
 > **Work in progress.** Firmament is pre-1.0 and under active development. There are no built binaries or releases yet — building from source is currently the only way to run it. Expect breaking changes until v1.0.0 ships (see [Roadmap](#roadmap)).
@@ -12,7 +12,7 @@
 <!-- ==BEGIN BODY== (plugin engineer: replace this block with What it is / Features / Signal flow / Roadmap) -->
 ## What it is
 
-Firmament is a Mid/Side stereo widener and imager built on JUCE 8, aimed at giving lush symphonic-metal layers (strings, choirs, synth pads) a wider, more open stereo image without smearing the low end: it scales the Side channel of a Mid/Side encode to control apparent width, with an optional multiband crossover that keeps sub-bass content centered (or independently wide) regardless of how wide the rest of the spectrum is pushed. See [`docs/manual.md`](docs/manual.md) for the full user manual (what each control does musically, tips, where Firmament sits in a mix chain).
+Firmament is a Mid/Side stereo widener and imager built on JUCE 8, aimed at giving lush orchestral layers (strings, choirs, synth pads) a wider, more open stereo image without smearing the low end: it scales the Side channel of a Mid/Side encode to control apparent width, with an optional multiband crossover that keeps sub-bass content centered (or independently wide) regardless of how wide the rest of the spectrum is pushed. See [`docs/manual.md`](docs/manual.md) for the full user manual (what each control does musically, tips, where Firmament sits in a mix chain).
 
 ## Features
 
