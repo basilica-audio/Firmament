@@ -41,7 +41,10 @@
 // attenuate the Side signal in proportion to how out-of-phase the input is.
 // Because this only ever scales Side and never touches Mid, it preserves
 // the exact same mono-sum invariant (L + R == 2 * Mid at any setting) that
-// Width and multiband width already rely on - see docs/architecture.md.
+// Width and multiband width already rely on - see docs/architecture.md. The
+// on/off toggle itself is crossfaded (not an instant gate), since the
+// correlation estimate keeps running while the feature is off and can
+// already be sitting at its floor the instant it is engaged.
 //
 // Haas Mode: an alternative, non-M/S widening technique applied *after* M/S
 // decode - the Right channel is delayed by HaasTimeMs relative to Left via a
@@ -169,6 +172,17 @@ private:
     // cheap, but there is no audible benefit to sample-accurate updates for
     // a manually-set widening parameter.
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> haasTimeMsSmoothed;
+
+    // Auto Mono Safety's on/off toggle is crossfaded rather than applied as
+    // an instant per-block gate (GitHub issue #13): the correlation-derived
+    // safetyGain below is always computed (the correlation sums are already
+    // running unconditionally), and this ramps between 0 (fully bypassed -
+    // effective Side gain pinned to 1.0) and 1 (fully engaged - effective
+    // Side gain equals safetyGain) over the same smoothingTimeSeconds used
+    // elsewhere, so flipping the toggle while the correlation estimate is
+    // already settled near its worst case (~-9 dB) can no longer step the
+    // Side gain in a single sample.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> autoMonoSafetyAmountSmoothed;
 
     // Running leaky-integrator sums driving the correlation estimate (see
     // getCorrelationValue()); kept in double for precision over long runs.

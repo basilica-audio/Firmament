@@ -25,6 +25,23 @@ namespace
         spec.numChannels = 2;
         return spec;
     }
+
+    // Deterministic broadband stereo noise (independent L/R, so the derived
+    // Side stream carries real wideband content) - seeded per block index so
+    // two engines fed the same block indices see bit-identical input.
+    void fillDeterministicStereoNoise (juce::AudioBuffer<float>& buffer, int blockIndex, float amplitude = 0.5f)
+    {
+        juce::Random random (987654321 + static_cast<juce::int64> (blockIndex));
+
+        auto* left = buffer.getWritePointer (0);
+        auto* right = buffer.getWritePointer (1);
+
+        for (int i = 0; i < buffer.getNumSamples(); ++i)
+        {
+            left[i] = amplitude * (random.nextFloat() * 2.0f - 1.0f);
+            right[i] = amplitude * (random.nextFloat() * 2.0f - 1.0f);
+        }
+    }
 }
 
 TEST_CASE ("Multiband width: Low Width > 0% keeps the low band wide while Width independently collapses the high band", "[dsp][engine][multiband]")
@@ -230,4 +247,95 @@ TEST_CASE ("Multiband width: independent Low Width/Width never breaks the mono-s
         maxResidual = std::max (maxResidual, std::abs ((left[i] + right[i]) - expectedSum[i]));
 
     CHECK (maxResidual < 1.0e-4f);
+}
+
+TEST_CASE ("Bass-mono crossover: re-engaging after a disabled stretch resumes from live filter state (no stale-state transient)", "[dsp][engine][multiband]")
+{
+    // Regression test for GitHub issue #12: while BassMonoFreq sat at 0
+    // (disabled), the crossover's internal TPT state (s1-s4) was simply never
+    // touched - frozen at whatever it held when the section was last engaged,
+    // not decayed or reset. Re-engaging it (e.g. BassMonoFreq automation
+    // sweeping back up through 0 Hz) then resumed filtering from a stale
+    // snapshot that no longer matched the live signal, producing an audible
+    // transient. The engine must instead keep the crossover's state synced
+    // with the live Side signal even while the section is disabled (the same
+    // "always process, conditionally use" pattern the Haas delay line already
+    // follows), so that after a disabled stretch a re-engaged crossover
+    // behaves exactly like one that was engaged the whole time.
+    const auto spec = makeTestSpec();
+
+    // `toggled` runs 300 Hz -> 0 Hz (off) -> 300 Hz; `alwaysOn` keeps 300 Hz
+    // throughout. Both see bit-identical input, so once bass-mono is
+    // re-engaged the two must produce (near-)identical output - any
+    // difference is exactly the stale-state transient this test guards
+    // against.
+    FirmamentEngine toggled;
+    toggled.setWidthPercent (100.0f);
+    toggled.setLowWidthPercent (0.0f);
+    toggled.setBassMonoFrequencyHz (300.0f);
+    toggled.setOutputDb (0.0f);
+    toggled.prepare (spec);
+
+    FirmamentEngine alwaysOn;
+    alwaysOn.setWidthPercent (100.0f);
+    alwaysOn.setLowWidthPercent (0.0f);
+    alwaysOn.setBassMonoFrequencyHz (300.0f);
+    alwaysOn.setOutputDb (0.0f);
+    alwaysOn.prepare (spec);
+
+    auto processBlockPair = [&] (int blockIndex, juce::AudioBuffer<float>& toggledOut, juce::AudioBuffer<float>& alwaysOnOut)
+    {
+        fillDeterministicStereoNoise (toggledOut, blockIndex);
+        juce::dsp::AudioBlock<float> toggledBlock (toggledOut);
+        toggled.process (toggledBlock);
+
+        fillDeterministicStereoNoise (alwaysOnOut, blockIndex);
+        juce::dsp::AudioBlock<float> alwaysOnBlock (alwaysOnOut);
+        alwaysOn.process (alwaysOnBlock);
+    };
+
+    juce::AudioBuffer<float> toggledBuffer (2, testBlockSize);
+    juce::AudioBuffer<float> alwaysOnBuffer (2, testBlockSize);
+
+    int blockIndex = 0;
+
+    // Phase 1: both engaged at 300 Hz, long enough for all smoothers and the
+    // crossover state to be fully settled.
+    for (int i = 0; i < 10; ++i)
+        processBlockPair (blockIndex++, toggledBuffer, alwaysOnBuffer);
+
+    // Phase 2: disable bass-mono on `toggled` only, for roughly half a
+    // second of audio - plenty for the live signal to diverge completely
+    // from whatever state a frozen filter would have kept.
+    toggled.setBassMonoFrequencyHz (0.0f);
+
+    for (int i = 0; i < 12; ++i)
+        processBlockPair (blockIndex++, toggledBuffer, alwaysOnBuffer);
+
+    // Phase 3: re-engage. From here on `toggled` must match `alwaysOn`.
+    toggled.setBassMonoFrequencyHz (300.0f);
+
+    float maxDifference = 0.0f;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        processBlockPair (blockIndex++, toggledBuffer, alwaysOnBuffer);
+
+        for (int channel = 0; channel < 2; ++channel)
+        {
+            const auto* toggledData = toggledBuffer.getReadPointer (channel);
+            const auto* alwaysOnData = alwaysOnBuffer.getReadPointer (channel);
+
+            for (int sample = 0; sample < testBlockSize; ++sample)
+                maxDifference = std::max (maxDifference, std::abs (toggledData[sample] - alwaysOnData[sample]));
+        }
+    }
+
+    REQUIRE (TestHelpers::allSamplesFinite (toggledBuffer));
+
+    // With the crossover state kept live while disabled, the two engines are
+    // in bit-identical state at the moment of re-engagement, so their output
+    // must agree to well below audibility. A frozen-state crossover fails
+    // this by orders of magnitude (a genuine transient, not rounding noise).
+    CHECK (maxDifference < 1.0e-6f);
 }
