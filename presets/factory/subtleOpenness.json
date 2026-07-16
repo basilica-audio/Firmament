@@ -1,0 +1,20 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.firmament",
+    "pluginVersion": "0.2.0",
+    "name": "Subtle Openness",
+    "category": "Bus",
+    "parameters": {
+        "width": 115.0,
+        "bassMonoFreq": 100.0,
+        "output": 0.0,
+        "lowWidth": 0.0,
+        "autoMonoSafety": 0.0,
+        "haasEnabled": 0.0,
+        "haasTimeMs": 20.0,
+        "autoMonoSafetyFloorDb": -9.1,
+        "autoMonoSafetyMultiband": 0.0,
+        "decorrelateEnabled": 0.0,
+        "decorrelateAmount": 50.0
+    }
+}

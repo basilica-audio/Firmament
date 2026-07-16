@@ -40,11 +40,15 @@ TEST_CASE ("Long-run stability: continuous randomised automation of every parame
     {
         setParam (processor, ParamIDs::width, unit (rng) * 200.0f);
         setParam (processor, ParamIDs::lowWidth, unit (rng) * 200.0f);
-        setParam (processor, ParamIDs::bassMonoFreq, unit (rng) * 500.0f);
+        setParam (processor, ParamIDs::bassMonoFreq, unit (rng) * 600.0f);
         setParam (processor, ParamIDs::autoMonoSafety, coinFlip (rng) ? 1.0f : 0.0f);
         setParam (processor, ParamIDs::haasEnabled, coinFlip (rng) ? 1.0f : 0.0f);
         setParam (processor, ParamIDs::haasTimeMs, unit (rng) * 40.0f);
         setParam (processor, ParamIDs::output, -24.0f + unit (rng) * 48.0f);
+        setParam (processor, ParamIDs::autoMonoSafetyFloorDb, -24.0f + unit (rng) * 24.0f);
+        setParam (processor, ParamIDs::autoMonoSafetyMultiband, coinFlip (rng) ? 1.0f : 0.0f);
+        setParam (processor, ParamIDs::decorrelateEnabled, coinFlip (rng) ? 1.0f : 0.0f);
+        setParam (processor, ParamIDs::decorrelateAmount, unit (rng) * 100.0f);
 
         juce::AudioBuffer<float> buffer (2, blockSize);
         TestHelpers::fillStereoWithDistinctSines (buffer, 48000.0,
@@ -64,11 +68,15 @@ TEST_CASE ("Long-run stability: sustained worst-case settings (max width/safety/
 
     setParam (processor, ParamIDs::width, 200.0f);
     setParam (processor, ParamIDs::lowWidth, 200.0f);
-    setParam (processor, ParamIDs::bassMonoFreq, 500.0f);
+    setParam (processor, ParamIDs::bassMonoFreq, 600.0f);
     setParam (processor, ParamIDs::autoMonoSafety, 1.0f);
     setParam (processor, ParamIDs::haasEnabled, 1.0f);
     setParam (processor, ParamIDs::haasTimeMs, 40.0f);
     setParam (processor, ParamIDs::output, 24.0f);
+    setParam (processor, ParamIDs::autoMonoSafetyFloorDb, -24.0f);
+    setParam (processor, ParamIDs::autoMonoSafetyMultiband, 1.0f);
+    setParam (processor, ParamIDs::decorrelateEnabled, 1.0f);
+    setParam (processor, ParamIDs::decorrelateAmount, 100.0f);
 
     juce::MidiBuffer midi;
 

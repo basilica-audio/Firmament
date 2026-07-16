@@ -2,6 +2,8 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "presets/PresetBar.h"
+
 class FirmamentAudioProcessor;
 
 // A simple, functional v0.1 editor: one rotary slider per float parameter and
@@ -43,6 +45,13 @@ private:
 
     FirmamentAudioProcessor& audioProcessor;
 
+    // M2 preset system (src/presets/PresetBar.h) - a horizontal strip
+    // docked at the top of the editor. Constructed after the localisation
+    // frame is installed (see the constructor) so its TRANS()'d strings
+    // (and any of its own dialogs opened later) pick up the right language
+    // from the very first paint.
+    basilica::presets::PresetBar presetBar;
+
     // Row 1: the core M/S width signal path.
     Knob widthKnob;
     Knob bassMonoKnob;
@@ -53,6 +62,14 @@ private:
     Toggle autoMonoSafetyToggle;
     Toggle haasEnabledToggle;
     Knob haasTimeKnob;
+
+    // Row 3: v0.2.0 additions (docs/design-brief.md) - Auto Mono Safety's
+    // floor/multiband refinements and the new Decorrelate widening
+    // technique.
+    Knob autoMonoSafetyFloorKnob;
+    Toggle autoMonoSafetyMultibandToggle;
+    Toggle decorrelateEnabledToggle;
+    Knob decorrelateAmountKnob;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FirmamentAudioProcessorEditor)
 };

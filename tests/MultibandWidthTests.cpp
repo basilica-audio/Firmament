@@ -339,3 +339,91 @@ TEST_CASE ("Bass-mono crossover: re-engaging after a disabled stretch resumes fr
     // this by orders of magnitude (a genuine transient, not rounding noise).
     CHECK (maxDifference < 1.0e-6f);
 }
+
+TEST_CASE ("Bass Mono Freq range extension: forced-mono-below-crossover and magnitude-preservation hold across the extended 0-600 Hz range", "[dsp][engine][multiband][v0.2.0]")
+{
+    // docs/design-brief.md's lowest-confidence, most-reasoned v0.2.0 change:
+    // the range ceiling moved from 500 to 600 Hz. Parametrised across a
+    // spread including the old ceiling and the new one, re-running the two
+    // core crossover-behaviour guarantees the v0.1/v0.1.1 tests already
+    // established at 300 Hz - not just the old 0-500 Hz span.
+    const float crossoverFrequenciesHz[] = { 80.0f, 150.0f, 300.0f, 450.0f, 500.0f, 600.0f };
+
+    for (const auto crossoverHz : crossoverFrequenciesHz)
+    {
+        CAPTURE (crossoverHz);
+
+        // Forced-mono-below-crossover: a test tone comfortably below the
+        // crossover (a fixed fraction of it) must collapse toward mono at
+        // the default Low Width (0%).
+        {
+            FirmamentEngine engine;
+            engine.setWidthPercent (200.0f);
+            engine.setBassMonoFrequencyHz (crossoverHz);
+            engine.setOutputDb (0.0f);
+
+            const auto spec = makeTestSpec();
+            engine.prepare (spec);
+
+            const auto testFreq = static_cast<double> (crossoverHz) * 0.15; // comfortably below the crossover
+            juce::AudioBuffer<float> buffer (2, testBlockSize);
+            TestHelpers::fillStereoWithDistinctSines (buffer, testSampleRate, testFreq, testFreq * 1.1, 0.5f);
+
+            juce::dsp::AudioBlock<float> block (buffer);
+            engine.process (block); // warm-up
+            TestHelpers::fillStereoWithDistinctSines (buffer, testSampleRate, testFreq, testFreq * 1.1, 0.5f);
+            engine.process (block);
+
+            const auto* left = buffer.getReadPointer (0);
+            const auto* right = buffer.getReadPointer (1);
+
+            constexpr int measureFrom = testBlockSize / 2;
+            float maxDifference = 0.0f;
+
+            for (int i = measureFrom; i < testBlockSize; ++i)
+                maxDifference = std::max (maxDifference, std::abs (left[i] - right[i]));
+
+            // -24 dB relative to the 0.5 amplitude input - a generous bound
+            // that still clearly distinguishes "forced mono" from "left
+            // wide" across the whole extended crossover range (a test tone
+            // this far below the crossover, at any of these frequencies,
+            // sits solidly in the LR4 stopband).
+            CHECK (maxDifference < 0.5f * 0.0631f);
+        }
+
+        // Magnitude preservation: Width == Low Width == 100% still holds the
+        // "flat-magnitude allpass sum" guarantee (not an exact null) at this
+        // crossover frequency too.
+        {
+            FirmamentEngine engine;
+            engine.setWidthPercent (100.0f);
+            engine.setLowWidthPercent (100.0f);
+            engine.setBassMonoFrequencyHz (crossoverHz);
+            engine.setOutputDb (0.0f);
+
+            const auto spec = makeTestSpec();
+            engine.prepare (spec);
+
+            juce::AudioBuffer<float> buffer (2, testBlockSize);
+
+            for (int warmup = 0; warmup < 4; ++warmup)
+            {
+                TestHelpers::fillStereoWithDistinctSines (buffer, testSampleRate, 1000.0, 1300.0, 0.5f);
+                juce::dsp::AudioBlock<float> block (buffer);
+                engine.process (block);
+            }
+
+            juce::AudioBuffer<float> reference (2, testBlockSize);
+            TestHelpers::fillStereoWithDistinctSines (reference, testSampleRate, 1000.0, 1300.0, 0.5f);
+            buffer.makeCopyOf (reference);
+
+            juce::dsp::AudioBlock<float> block (buffer);
+            engine.process (block);
+
+            const auto referenceRms = TestHelpers::rms (reference);
+            const auto outputRms = TestHelpers::rms (buffer);
+
+            CHECK (outputRms == Catch::Approx (referenceRms).epsilon (0.02));
+        }
+    }
+}

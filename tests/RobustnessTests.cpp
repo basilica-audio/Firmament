@@ -162,12 +162,16 @@ TEST_CASE ("Extreme parameter values at both range edges produce no NaN/Inf", "[
     for (bool useMinimum : { true, false })
     {
         setParam (processor, ParamIDs::width, useMinimum ? 0.0f : 200.0f);
-        setParam (processor, ParamIDs::bassMonoFreq, useMinimum ? 0.0f : 500.0f);
+        setParam (processor, ParamIDs::bassMonoFreq, useMinimum ? 0.0f : 600.0f);
         setParam (processor, ParamIDs::lowWidth, useMinimum ? 0.0f : 200.0f);
         setParam (processor, ParamIDs::autoMonoSafety, useMinimum ? 0.0f : 1.0f);
         setParam (processor, ParamIDs::haasEnabled, useMinimum ? 0.0f : 1.0f);
         setParam (processor, ParamIDs::haasTimeMs, useMinimum ? 0.0f : 40.0f);
         setParam (processor, ParamIDs::output, useMinimum ? -24.0f : 24.0f);
+        setParam (processor, ParamIDs::autoMonoSafetyFloorDb, useMinimum ? -24.0f : 0.0f);
+        setParam (processor, ParamIDs::autoMonoSafetyMultiband, useMinimum ? 0.0f : 1.0f);
+        setParam (processor, ParamIDs::decorrelateEnabled, useMinimum ? 0.0f : 1.0f);
+        setParam (processor, ParamIDs::decorrelateAmount, useMinimum ? 0.0f : 100.0f);
 
         TestHelpers::fillStereoWithDistinctSines (buffer, 44100.0, 440.0, 550.0, 0.8f);
 
@@ -189,12 +193,16 @@ TEST_CASE ("Rapid parameter automation across many blocks produces no NaN/Inf", 
     for (int block = 0; block < 100; ++block)
     {
         setParam (processor, ParamIDs::width, unit (rng) * 200.0f);
-        setParam (processor, ParamIDs::bassMonoFreq, unit (rng) * 500.0f);
+        setParam (processor, ParamIDs::bassMonoFreq, unit (rng) * 600.0f);
         setParam (processor, ParamIDs::lowWidth, unit (rng) * 200.0f);
         setParam (processor, ParamIDs::autoMonoSafety, unit (rng) > 0.5f ? 1.0f : 0.0f);
         setParam (processor, ParamIDs::haasEnabled, unit (rng) > 0.5f ? 1.0f : 0.0f);
         setParam (processor, ParamIDs::haasTimeMs, unit (rng) * 40.0f);
         setParam (processor, ParamIDs::output, -24.0f + unit (rng) * 48.0f);
+        setParam (processor, ParamIDs::autoMonoSafetyFloorDb, -24.0f + unit (rng) * 24.0f);
+        setParam (processor, ParamIDs::autoMonoSafetyMultiband, unit (rng) > 0.5f ? 1.0f : 0.0f);
+        setParam (processor, ParamIDs::decorrelateEnabled, unit (rng) > 0.5f ? 1.0f : 0.0f);
+        setParam (processor, ParamIDs::decorrelateAmount, unit (rng) * 100.0f);
 
         juce::AudioBuffer<float> buffer (2, 256);
         TestHelpers::fillStereoWithDistinctSines (buffer, 48000.0, 200.0 + unit (rng) * 4000.0, 300.0 + unit (rng) * 4000.0, 0.7f);

@@ -3,12 +3,64 @@
 #include "params/ParameterIds.h"
 #include "params/ParameterLayout.h"
 
+#include <BinaryData.h>
+
+namespace
+{
+    // The small, Firmament-specific config surface PresetManager needs (see
+    // src/presets/PresetManager.h's class docs) - everything else about the
+    // preset system is fully generic and portable across the suite (see
+    // basilica-audio/nave's docs/preset-system-notes.md, the pilot
+    // implementation this was copied from).
+    basilica::presets::PresetManagerConfig makePresetManagerConfig()
+    {
+        // JucePlugin_CFBundleIdentifier expands to a raw (unquoted) token
+        // sequence, not a string literal - JUCE_STRINGIFY() is the
+        // documented way to turn it into one. This is always
+        // "com.yvesvogl.firmament" here (BUNDLE_ID in CMakeLists.txt),
+        // matching the "plugin" field baked into every presets/factory/*.json
+        // file.
+        basilica::presets::PresetManagerConfig config;
+        config.pluginId = JUCE_STRINGIFY (JucePlugin_CFBundleIdentifier);
+        config.pluginName = JucePlugin_Name;
+        config.manufacturerName = "Yves Vogl";
+        config.pluginVersion = JucePlugin_VersionString;
+        // userPresetsDirectoryOverrideForTests intentionally left
+        // default-constructed (empty) - production instances always use the
+        // real platform-standard preset location (see PresetManager.h).
+        return config;
+    }
+
+    // BinaryData symbol names are derived from the presets/factory/*.json
+    // file names passed to juce_add_binary_data() in CMakeLists.txt (dots
+    // become underscores) - this list must stay in sync with that SOURCES
+    // list. Order here only affects factory-preset iteration order before
+    // getAllPresets() re-sorts alphabetically, so it isn't otherwise
+    // significant.
+    std::vector<basilica::presets::FactoryPresetAsset> makeFactoryPresetAssets()
+    {
+        return {
+            { BinaryData::default_json, BinaryData::default_jsonSize },
+            { BinaryData::openStrings_json, BinaryData::openStrings_jsonSize },
+            { BinaryData::choirBloom_json, BinaryData::choirBloom_jsonSize },
+            { BinaryData::doubledRhythmGlue_json, BinaryData::doubledRhythmGlue_jsonSize },
+            { BinaryData::masterBusBassMono_json, BinaryData::masterBusBassMono_jsonSize },
+            { BinaryData::automatedWidthSafetyNet_json, BinaryData::automatedWidthSafetyNet_jsonSize },
+            { BinaryData::monoSafeAir_json, BinaryData::monoSafeAir_jsonSize },
+            { BinaryData::widePadFullPrecedence_json, BinaryData::widePadFullPrecedence_jsonSize },
+            { BinaryData::extremeWidth_json, BinaryData::extremeWidth_jsonSize },
+            { BinaryData::subtleOpenness_json, BinaryData::subtleOpenness_jsonSize },
+        };
+    }
+}
+
 //==============================================================================
 FirmamentAudioProcessor::FirmamentAudioProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "PARAMETERS", createParameterLayout())
+      apvts (*this, nullptr, "PARAMETERS", createParameterLayout()),
+      presetManager (apvts, makePresetManagerConfig(), makeFactoryPresetAssets())
 {
     widthPercent = apvts.getRawParameterValue (ParamIDs::width);
     lowWidthPercent = apvts.getRawParameterValue (ParamIDs::lowWidth);
@@ -17,6 +69,10 @@ FirmamentAudioProcessor::FirmamentAudioProcessor()
     haasEnabled = apvts.getRawParameterValue (ParamIDs::haasEnabled);
     haasTimeMs = apvts.getRawParameterValue (ParamIDs::haasTimeMs);
     outputDb = apvts.getRawParameterValue (ParamIDs::output);
+    autoMonoSafetyFloorDb = apvts.getRawParameterValue (ParamIDs::autoMonoSafetyFloorDb);
+    autoMonoSafetyMultiband = apvts.getRawParameterValue (ParamIDs::autoMonoSafetyMultiband);
+    decorrelateEnabled = apvts.getRawParameterValue (ParamIDs::decorrelateEnabled);
+    decorrelateAmount = apvts.getRawParameterValue (ParamIDs::decorrelateAmount);
 
     jassert (widthPercent != nullptr);
     jassert (lowWidthPercent != nullptr);
@@ -25,6 +81,15 @@ FirmamentAudioProcessor::FirmamentAudioProcessor()
     jassert (haasEnabled != nullptr);
     jassert (haasTimeMs != nullptr);
     jassert (outputDb != nullptr);
+    jassert (autoMonoSafetyFloorDb != nullptr);
+    jassert (autoMonoSafetyMultiband != nullptr);
+    jassert (decorrelateEnabled != nullptr);
+    jassert (decorrelateAmount != nullptr);
+
+    // M2 default resolution: user "Default" preset > factory "Default"
+    // preset > the ParameterLayout defaults apvts was just constructed
+    // with above (see PresetManager::applyStartupDefault()'s docs).
+    presetManager.applyStartupDefault();
 }
 
 FirmamentAudioProcessor::~FirmamentAudioProcessor() = default;
@@ -103,6 +168,10 @@ void FirmamentAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     engine.setHaasEnabled (haasEnabled->load (std::memory_order_relaxed) > 0.5f);
     engine.setHaasTimeMs (haasTimeMs->load (std::memory_order_relaxed));
     engine.setOutputDb (outputDb->load (std::memory_order_relaxed));
+    engine.setAutoMonoSafetyFloorDb (autoMonoSafetyFloorDb->load (std::memory_order_relaxed));
+    engine.setAutoMonoSafetyMultibandEnabled (autoMonoSafetyMultiband->load (std::memory_order_relaxed) > 0.5f);
+    engine.setDecorrelateEnabled (decorrelateEnabled->load (std::memory_order_relaxed) > 0.5f);
+    engine.setDecorrelateAmountPercent (decorrelateAmount->load (std::memory_order_relaxed));
 
     engine.prepare (spec);
 
@@ -171,6 +240,10 @@ void FirmamentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     engine.setHaasEnabled (haasEnabled->load (std::memory_order_relaxed) > 0.5f);
     engine.setHaasTimeMs (haasTimeMs->load (std::memory_order_relaxed));
     engine.setOutputDb (outputDb->load (std::memory_order_relaxed));
+    engine.setAutoMonoSafetyFloorDb (autoMonoSafetyFloorDb->load (std::memory_order_relaxed));
+    engine.setAutoMonoSafetyMultibandEnabled (autoMonoSafetyMultiband->load (std::memory_order_relaxed) > 0.5f);
+    engine.setDecorrelateEnabled (decorrelateEnabled->load (std::memory_order_relaxed) > 0.5f);
+    engine.setDecorrelateAmountPercent (decorrelateAmount->load (std::memory_order_relaxed));
 
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);

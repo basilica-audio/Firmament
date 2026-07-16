@@ -1,0 +1,20 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.firmament",
+    "pluginVersion": "0.2.0",
+    "name": "Choir Bloom",
+    "category": "Bus",
+    "parameters": {
+        "width": 170.0,
+        "bassMonoFreq": 130.0,
+        "output": -1.0,
+        "lowWidth": 15.0,
+        "autoMonoSafety": 1.0,
+        "haasEnabled": 0.0,
+        "haasTimeMs": 20.0,
+        "autoMonoSafetyFloorDb": -12.0,
+        "autoMonoSafetyMultiband": 0.0,
+        "decorrelateEnabled": 0.0,
+        "decorrelateAmount": 50.0
+    }
+}

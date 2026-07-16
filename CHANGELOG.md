@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-16
+
+Research-driven deep-dive rework (`docs/design-brief.md`, `docs/research-notes.md`)
+plus the suite's M2 preset system (ported from `basilica-audio/nave`'s pilot
+implementation) and a German i18n frame for the preset UI. Every new
+parameter defaults to a value that reproduces v0.1.1 behaviour exactly, so
+existing sessions/automation are unaffected unless a user or preset opts in.
+
+### Added
+
+- **Decorrelate** (`decorrelateEnabled`, `decorrelateAmount`): a second
+  alternative widening technique for near-mono material, alongside Haas Mode
+  - a cascade of allpass IIR filters processes the Right channel instead of
+  delaying it, trading Haas Mode's deep, well-documented comb-filter
+  mono-fold-down cost for much smaller, documented "mild spectral ripple."
+  Mutually exclusive with Haas Mode (Decorrelate takes effect, Haas Mode's
+  delay line is bypassed, whenever both are engaged). Off by default.
+  Sourced from iZotope Ozone Imager's dual Stereoize modes and the general
+  allpass-decorrelation literature (`docs/research-notes.md` Section 4) - the
+  headline finding of this deep-dive's research pass.
+- **Auto Mono Safety ballistics/dead-zone/floor/multiband revisions**:
+  ballistics moved from a 200 ms to a 300 ms leaky-integrator time constant
+  (closer to, though deliberately not all the way to, the ~600 ms documented
+  for a passive correlation-meter display); a new dead-zone means correlation
+  in `[-0.10, 1.0]` no longer triggers any attenuation at all ("the
+  occasional small deviation into the negative side is usually
+  insignificant"); the previously-hardcoded 0.35 linear floor gain is now the
+  user-adjustable `autoMonoSafetyFloorDb` parameter (-24 to 0 dB, default
+  -9.1 dB - reproduces the old value exactly); and a new
+  `autoMonoSafetyMultiband` parameter (off by default) lets Auto Mono Safety
+  reason about the low/high bands split out by Bass Mono Freq independently,
+  instead of one broadband correlation estimate scaling both - sourced from
+  the per-band correlation-safety precedent of KERN WIDE, HoRNet ZeroWidth,
+  and In The Mix Bandwidth.
+- Bass Mono Freq's range ceiling extended from 500 to 600 Hz (skew unchanged)
+  - the single lowest-confidence, most-reasoned change in this release,
+  based on the Waves S1 Shuffle control's documented ~600 Hz convention (an
+  indirect, third-party-summarised source, not a primary manual).
+- M2 preset system (`src/presets/`): factory/user preset browsing, save/save
+  as/rename/delete, a settable default, single-file and zip-bank
+  import/export, and a dirty-state indicator, via a preset bar docked at the
+  top of the editor. Ten factory presets ship (`docs/presets.md`) - nine
+  sourced from `docs/design-brief.md`'s Factory Presets section plus a
+  `Default`/`Init` passthrough preset. Ported verbatim from
+  `basilica-audio/nave`'s M2 pilot implementation.
+- German frame-string localisation (`resources/i18n/de.txt`), selected
+  automatically from the system language at editor construction. Only the
+  preset bar's frame strings are translated - parameter names/units are
+  never translated anywhere in this plugin.
+- `docs/design-brief.md` and `docs/research-notes.md`: the full sourced
+  research behind every default/range in this release, including which
+  numbers are directly sourced vs. reasoned.
+- `docs/presets.md`: one-line intent documentation for every factory preset.
+- Broadened Catch2 test suite (51 -> 82 test cases): dead-zone/floor/
+  multiband/ballistics regression tests for Auto Mono Safety, Decorrelate
+  mono-fold-down cost (measured via a real magnitude-spectrum FFT
+  comparison, not just described) and mutual-exclusivity tests, a Bass Mono
+  Freq range-extension sweep, a tolerant v0.1.1-state-import test, and 17
+  ported preset-system tests plus 3 new i18n-coverage tests.
+
+### Changed
+
+- `PluginEditor`: docked a preset bar at the top of the v0.1/v0.2-style
+  functional editor, and added controls for every new v0.2.0 parameter
+  (`Auto Mono Safety Floor` knob, `Auto Mono Safety Multiband`/`Decorrelate`
+  toggles, `Decorrelate Amount` knob).
+- `docs/architecture.md` and `docs/manual.md`: updated for the full v0.2.0
+  signal path, parameter reference, and a new honesty note on the
+  research-derived (not measured-against-a-commercial-plugin) nature of this
+  release's voicing.
+
+### Fixed
+
+- Nothing DSP-behavioural beyond the deliberate v0.2.0 changes documented
+  above - v0.1.1's issue #12/#13 fixes (live crossover state while bass-mono
+  is disabled; smoothed Auto Mono Safety toggle) are preserved and their
+  regression tests still pass unmodified.
+
 ## [0.1.1] - 2026-07-16
 
 ### Added

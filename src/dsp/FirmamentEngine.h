@@ -4,6 +4,8 @@
 
 #include "MidSideCodec.h"
 
+#include <array>
+
 // The complete Firmament signal path, independent of juce::AudioProcessor so
 // it can be exercised directly by unit tests without instantiating a full
 // plugin (see tests/EngineTests.cpp). Owns all DSP state; every filter is
@@ -46,6 +48,31 @@
 // correlation estimate keeps running while the feature is off and can
 // already be sitting at its floor the instant it is engaged.
 //
+// v0.2.0 (docs/design-brief.md) research-driven revisions to Auto Mono
+// Safety, all sourced from documented professional correlation-meter
+// convention:
+//   - Ballistics: correlationTimeConstantSeconds moved from 200ms to 300ms
+//     (a reasoned compromise toward, not all the way to, the ~600ms
+//     documented for a pure *display* meter - Auto Mono Safety is a live
+//     control-loop input as well as a future meter feed).
+//   - Dead-zone: correlation in [autoMonoSafetyDeadZone, 1.0] (-0.10 to 1.0)
+//     now yields full (1.0) safety gain, not just correlation >= 0 - "the
+//     occasional small deviation into the negative side is usually
+//     insignificant" (documented correlation-meter practice). The ramp
+//     toward the floor now runs from -0.10 down to -1.0.
+//   - The floor gain is now user-exposed (autoMonoSafetyFloorDb, -24 to
+//     0 dB, default -9.1 dB - reproduces the old hardcoded 0.35 linear floor
+//     bit-for-bit at default) rather than a fixed internal constant.
+//   - Multiband (autoMonoSafetyMultiband, off by default): when on and the
+//     bass-mono crossover is engaged, the correlation-derived gain is
+//     computed and applied independently for the low/high bands already
+//     split out by that crossover (via a second pair of mono
+//     LinkwitzRileyFilters run on the raw input L/R, always processing -
+//     same "always process, conditionally use" pattern as the bass-mono
+//     crossover itself), instead of one broadband estimate scaling both.
+//     When off, or bass-mono is off, behaviour is unchanged (single
+//     broadband estimate).
+//
 // Haas Mode: an alternative, non-M/S widening technique applied *after* M/S
 // decode - the Right channel is delayed by HaasTimeMs relative to Left via a
 // juce::dsp::DelayLine. Unlike Width-based widening, this does NOT preserve
@@ -55,6 +82,32 @@
 // (the precedence effect). It is off by default and orthogonal to
 // Width/multiband width/Auto Mono Safety, which all operate purely in the
 // M/S domain before Haas Mode's post-decode delay is applied.
+//
+// Decorrelate (v0.2.0, docs/design-brief.md): a second, gentler alternative
+// widening technique for near-mono material, also applied post-M/S-decode to
+// the Right channel, alongside Haas Mode. Where Haas Mode trades the exact
+// mono-sum guarantee for a strong precedence-effect delay (comb-filtering on
+// mono fold-down), Decorrelate trades a much smaller, documented cost (mild
+// spectral ripple, typically 1-2 dB) via a cascade of allpass IIR filters
+// (juce::dsp::IIR::Filter, spread across several fixed frequencies) blended
+// with the dry Right signal by decorrelateAmount. Like the bass-mono
+// crossover's dual-output processSample() and Haas Mode's delay line, the
+// allpass cascade always processes every sample (even while disabled) so its
+// internal state never goes stale; only the blend is conditional. Decorrelate
+// and Haas Mode are mutually exclusive: whenever both are enabled,
+// Decorrelate takes effect and the Haas delay line is pinned to 0 samples
+// (an exact passthrough) for as long as Decorrelate stays engaged - both
+// operate on the same post-decode Right channel for the same underlying
+// goal, and stacking them would make each one's already-approximate
+// mono-fold-down cost impossible to reason about independently. Decorrelate
+// is presented in the manual as "gentler, more mono-tolerant", not
+// "mono-safe" - it remains, like Haas Mode, an explicit, documented exception
+// to the mono-sum invariant, just a smaller one; the Width/Low Width/Auto
+// Mono Safety invariant itself (broadband or multiband) is completely
+// unaffected by either, since both sit strictly after M/S decode. Like the
+// bass-mono crossover and Haas Mode, the allpass cascade is a direct-form IIR
+// structure - zero-latency, sample-synchronous - so it never adds to
+// getLatencySamples().
 //
 // The bass-mono crossover itself is unchanged from v0.1: a single-channel
 // juce::dsp::LinkwitzRileyFilter (JUCE 8.0.14, prepared mono, dual-output
@@ -105,6 +158,13 @@ public:
     void setHaasTimeMs (float newHaasTimeMs);
     void setOutputDb (float newOutputDb);
 
+    // v0.2.0 additions - see the class-level comment above and
+    // docs/design-brief.md for the full rationale of each.
+    void setAutoMonoSafetyFloorDb (float newFloorDb);
+    void setAutoMonoSafetyMultibandEnabled (bool shouldBeEnabled);
+    void setDecorrelateEnabled (bool shouldBeEnabled);
+    void setDecorrelateAmountPercent (float newAmountPercent);
+
     // The most recent block's running correlation estimate of the plugin's
     // *input* L/R signal, in [-1, 1] (1 = perfectly in-phase/mono-compatible,
     // 0 = uncorrelated, -1 = perfectly out-of-phase). Updated once per
@@ -125,16 +185,42 @@ public:
 private:
     static constexpr double smoothingTimeSeconds = 0.05;
 
-    // Correlation meter ballistics: a 200 ms one-pole leaky-integrator time
-    // constant, typical for phase/correlation meters (fast enough to react
-    // usefully within Auto Mono Safety's control loop, slow enough not to
-    // flicker sample-to-sample).
-    static constexpr double correlationTimeConstantSeconds = 0.2;
+    // Correlation meter ballistics: a one-pole leaky-integrator time constant
+    // for Auto Mono Safety/the correlation meter. v0.2.0 (docs/design-brief.md)
+    // moves this from 200ms to 300ms - a reasoned compromise toward, but not
+    // all the way to, the ~600ms documented for a pure *display* correlation
+    // meter (Auto Mono Safety is a live control-loop input as well as a
+    // future meter feed, so staying meaningfully faster than a passive
+    // display is deliberate).
+    static constexpr double correlationTimeConstantSeconds = 0.3;
 
+    // Auto Mono Safety dead-zone (v0.2.0): correlation in [-0.10, 1.0] yields
+    // full (1.0) safety gain; the ramp toward the floor runs from -0.10 down
+    // to -1.0, not from 0.0 - "the occasional small deviation into the
+    // negative side is usually insignificant" (documented correlation-meter
+    // practice, see docs/research-notes.md Section 5). -0.10 itself is a
+    // reasoned magnitude (no source gives an exact number). Not user-exposed
+    // - like the ballistics time constant below, this is an internal
+    // constant defined alongside computeAutoMonoSafetyGain() in
+    // FirmamentEngine.cpp, not declared here.
+    //
     // Maximum Haas Mode delay the DelayLine is sized for; matches the
     // haasTimeMs parameter's documented maximum (see ParameterLayout.cpp)
     // with a small margin.
     static constexpr float maxHaasTimeMs = 41.0f;
+
+    // Number of cascaded allpass stages in the Decorrelate network, and the
+    // fixed frequencies (Hz) each stage's allpass coefficients are centred
+    // on - spread across the spectrum so the resulting phase shift is
+    // irregular rather than a single time offset (docs/research-notes.md
+    // Section 4: "phase shifts spread irregularly across the spectrum"),
+    // which is what keeps mono-fold-down cost to mild ripple rather than
+    // deep comb-filter notches. The exact stage count/frequency spacing is
+    // implementation-reasoned (docs/design-brief.md) - no source publishes
+    // an exact allpass topology for this category of effect.
+    static constexpr int numDecorrelateStages = 4;
+    static constexpr std::array<float, numDecorrelateStages> decorrelateStageFrequenciesHz { 300.0f, 900.0f, 2700.0f, 8100.0f };
+    static constexpr float decorrelateStageQ = 0.7f;
 
     double sampleRate = 44100.0;
 
@@ -145,10 +231,27 @@ private:
     juce::dsp::LinkwitzRileyFilter<float> bassMonoCrossover;
     juce::dsp::Gain<float> outputGain;
 
+    // v0.2.0 multiband Auto Mono Safety: a second pair of mono
+    // LinkwitzRileyFilters, run on the raw (pre-Width) input Left/Right
+    // channels at the same crossover frequency as bassMonoCrossover, so the
+    // per-band correlation estimate below can be computed independently for
+    // the low/high bands. Always processed (same "always process,
+    // conditionally use" pattern as bassMonoCrossover - see GitHub issue
+    // #12's fix) regardless of whether Multiband is actually engaged, so
+    // their internal TPT state never goes stale.
+    juce::dsp::LinkwitzRileyFilter<float> leftMultibandCrossover;
+    juce::dsp::LinkwitzRileyFilter<float> rightMultibandCrossover;
+
+    // Decorrelate's allpass cascade (Right channel only, mono) - see the
+    // class-level comment above. Always processed regardless of whether
+    // Decorrelate is enabled, so its state never goes stale when re-enabled.
+    std::array<juce::dsp::IIR::Filter<float>, numDecorrelateStages> decorrelateAllpassStages;
+
     // Haas Mode delay line - Right channel only, Left is passed through
     // unchanged. Always pushed/popped (even while Haas Mode is off, with the
     // delay pinned to 0 samples) so enabling it mid-stream never starts from
-    // stale/discontinuous history.
+    // stale/discontinuous history. Also pinned to 0 samples while Decorrelate
+    // is engaged (mutual exclusivity - see the class-level comment above).
     juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> haasDelayLine;
 
     // Width is a plain multiplicative scale on the Side channel, cheap
@@ -184,6 +287,22 @@ private:
     // Side gain in a single sample.
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> autoMonoSafetyAmountSmoothed;
 
+    // v0.2.0: Auto Mono Safety's floor gain (linear), smoothed the same way
+    // as Width/Low Width - a plain multiplicative endpoint of the dead-zone
+    // ramp below, cheap enough to interpolate per-sample.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> autoMonoSafetyFloorGainSmoothed;
+
+    // v0.2.0: Decorrelate's dry/wet blend amount (0..1), smoothed like
+    // Width/Low Width. Always advances even while Decorrelate is off (same
+    // pattern as haasTimeMsSmoothed), so re-enabling it starts from an
+    // up-to-date value. decorrelateEnabled itself is an instant per-block
+    // gate, like haasEnabled - not crossfaded like Auto Mono Safety's toggle,
+    // since (unlike Auto Mono Safety's correlation-derived gain) there is no
+    // hidden state that can already be sitting at an extreme the instant the
+    // feature is engaged; the always-running allpass cascade plus this
+    // smoothed amount are enough to avoid a discontinuity on toggle.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> decorrelateAmountSmoothed;
+
     // Running leaky-integrator sums driving the correlation estimate (see
     // getCorrelationValue()); kept in double for precision over long runs.
     // Computed from the *input* L/R every sample.
@@ -192,6 +311,17 @@ private:
     double correlationSumRR = 0.0;
     double correlationSmoothingCoeff = 0.0;
     float lastCorrelation = 0.0f;
+
+    // v0.2.0 multiband Auto Mono Safety: identical leaky-integrator sums as
+    // above, computed independently for the low/high bands split out by
+    // leftMultibandCrossover/rightMultibandCrossover. Always running (same
+    // "always process" rationale as the crossovers themselves).
+    double correlationSumLRLow = 0.0;
+    double correlationSumLLLow = 0.0;
+    double correlationSumRRLow = 0.0;
+    double correlationSumLRHigh = 0.0;
+    double correlationSumLLHigh = 0.0;
+    double correlationSumRRHigh = 0.0;
 
     // Last commanded values, re-applied to the smoothers on every prepare()
     // so re-preparing (sample-rate change, etc.) never resets a live
@@ -205,6 +335,12 @@ private:
     bool lastAutoMonoSafetyEnabled = false;
     bool lastHaasEnabled = false;
     float lastHaasTimeMs = 20.0f;
+
+    // v0.2.0 additions - defaults reproduce v0.1.1 behaviour exactly.
+    float lastAutoMonoSafetyFloorDb = -9.1f;
+    bool lastAutoMonoSafetyMultibandEnabled = false;
+    bool lastDecorrelateEnabled = false;
+    float lastDecorrelateAmountPercent = 50.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FirmamentEngine)
 };

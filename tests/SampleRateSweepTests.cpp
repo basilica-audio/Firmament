@@ -58,6 +58,47 @@ TEST_CASE ("FirmamentEngine stays finite, zero-latency, and correctly bounded ac
     }
 }
 
+TEST_CASE ("FirmamentEngine v0.2.0 additions (multiband safety, Decorrelate, extended Bass Mono Freq) stay finite and zero-latency across the sample-rate sweep", "[dsp][engine][sweep][v0.2.0]")
+{
+    for (const auto rate : sweepRates)
+    {
+        FirmamentEngine engine;
+        engine.setWidthPercent (140.0f);
+        engine.setLowWidthPercent (40.0f);
+        engine.setBassMonoFrequencyHz (600.0f); // the extended v0.2.0 ceiling
+        engine.setAutoMonoSafetyEnabled (true);
+        engine.setAutoMonoSafetyFloorDb (-15.0f);
+        engine.setAutoMonoSafetyMultibandEnabled (true);
+        engine.setDecorrelateEnabled (true);
+        engine.setDecorrelateAmountPercent (65.0f);
+        engine.setHaasEnabled (true); // mutual exclusivity: Decorrelate must win, Haas delay pinned to 0
+        engine.setHaasTimeMs (25.0f);
+        engine.setOutputDb (3.0f);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = rate;
+        spec.maximumBlockSize = static_cast<juce::uint32> (blockSize);
+        spec.numChannels = 2;
+        engine.prepare (spec);
+
+        CHECK (FirmamentEngine::getLatencySamples() == 0);
+
+        for (int block = 0; block < numBlocksPerRate; ++block)
+        {
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            TestHelpers::fillStereoWithDistinctSines (buffer, rate, 150.0, 3200.0, 0.6f);
+
+            juce::dsp::AudioBlock<float> audioBlock (buffer);
+            CHECK_NOTHROW (engine.process (audioBlock));
+
+            CHECK (TestHelpers::allSamplesFinite (buffer));
+            CHECK (TestHelpers::peakAbsolute (buffer) < 100.0f);
+        }
+
+        CHECK (std::isfinite (engine.getCorrelationValue()));
+    }
+}
+
 TEST_CASE ("FirmamentAudioProcessor: unity Width/BassMono-off round trip holds across the full sample-rate sweep", "[processor][sweep][null]")
 {
     // Extends the v0.1 48 kHz-only unity round-trip test (EngineTests.cpp)

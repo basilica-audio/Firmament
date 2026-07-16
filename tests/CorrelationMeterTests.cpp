@@ -15,7 +15,12 @@ namespace
 {
     constexpr double testSampleRate = 48000.0;
     constexpr int blockSize = 2048;
-    constexpr int settleBlocks = 30;
+
+    // v0.2.0: bumped from 30 to 45 blocks to keep the same settling margin
+    // now that the ballistics time constant moved from 200ms to 300ms (see
+    // docs/design-brief.md) - 45 * 2048 / 48000 ~= 1.92 s ~= 6.4 time
+    // constants at 300 ms.
+    constexpr int settleBlocks = 45;
 
     juce::dsp::ProcessSpec makeTestSpec()
     {

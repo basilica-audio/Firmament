@@ -58,15 +58,17 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
         static constexpr const char* allIds[] = {
             ParamIDs::width, ParamIDs::bassMonoFreq, ParamIDs::output,
             ParamIDs::lowWidth, ParamIDs::autoMonoSafety, ParamIDs::haasEnabled, ParamIDs::haasTimeMs,
+            ParamIDs::autoMonoSafetyFloorDb, ParamIDs::autoMonoSafetyMultiband,
+            ParamIDs::decorrelateEnabled, ParamIDs::decorrelateAmount,
         };
 
         for (const auto* id : allIds)
             CHECK (apvts.getParameter (id) != nullptr);
     }
 
-    SECTION ("total parameter count matches the M1 layout")
+    SECTION ("total parameter count matches the v0.2.0 layout")
     {
-        CHECK (apvts.processor.getParameters().size() == 7);
+        CHECK (apvts.processor.getParameters().size() == 11);
     }
 
     SECTION ("Width: M/S width scale defaults and range")
@@ -75,10 +77,10 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
         checkFloatRange (apvts, ParamIDs::width, 0.0f, 200.0f);
     }
 
-    SECTION ("Bass Mono Freq: crossover frequency defaults and range")
+    SECTION ("Bass Mono Freq: crossover frequency defaults and range (v0.2.0: 600 Hz ceiling)")
     {
         checkFloatDefault (apvts, ParamIDs::bassMonoFreq, 0.0f);
-        checkFloatRange (apvts, ParamIDs::bassMonoFreq, 0.0f, 500.0f);
+        checkFloatRange (apvts, ParamIDs::bassMonoFreq, 0.0f, 600.0f);
     }
 
     SECTION ("Output: trim defaults and range")
@@ -111,5 +113,31 @@ TEST_CASE ("Processor instantiates with the expected parameters", "[processor][p
     {
         checkFloatDefault (apvts, ParamIDs::haasTimeMs, 20.0f);
         checkFloatRange (apvts, ParamIDs::haasTimeMs, 0.0f, 40.0f);
+    }
+
+    SECTION ("Auto Mono Safety Floor: defaults and range (v0.2.0)")
+    {
+        checkFloatDefault (apvts, ParamIDs::autoMonoSafetyFloorDb, -9.1f);
+        checkFloatRange (apvts, ParamIDs::autoMonoSafetyFloorDb, -24.0f, 0.0f);
+    }
+
+    SECTION ("Auto Mono Safety Multiband: bool parameter defaults off (v0.2.0)")
+    {
+        auto* param = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (ParamIDs::autoMonoSafetyMultiband));
+        REQUIRE (param != nullptr);
+        CHECK (param->get() == false);
+    }
+
+    SECTION ("Decorrelate: bool parameter defaults off (v0.2.0)")
+    {
+        auto* param = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (ParamIDs::decorrelateEnabled));
+        REQUIRE (param != nullptr);
+        CHECK (param->get() == false);
+    }
+
+    SECTION ("Decorrelate Amount: defaults and range (v0.2.0)")
+    {
+        checkFloatDefault (apvts, ParamIDs::decorrelateAmount, 50.0f);
+        checkFloatRange (apvts, ParamIDs::decorrelateAmount, 0.0f, 100.0f);
     }
 }

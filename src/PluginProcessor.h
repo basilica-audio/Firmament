@@ -4,6 +4,7 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include "dsp/FirmamentEngine.h"
+#include "presets/PresetManager.h"
 
 // Firmament: a stereo widener/imager built around Mid/Side encode/decode.
 // Signal flow lives in FirmamentEngine (src/dsp) so it stays unit-testable
@@ -54,6 +55,14 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // M2 preset system (.scaffold/specs/preset-system-m2.md,
+    // src/presets/PresetManager.h). Constructed after apvts (its
+    // constructor registers APVTS parameter listeners) and public so
+    // FirmamentAudioProcessorEditor's PresetBar can talk to it directly -
+    // the same "processor owns it, editor references it" pattern apvts
+    // itself already uses.
+    basilica::presets::PresetManager presetManager;
+
     // The most recent block's correlation/phase estimate of the plugin's
     // input (see FirmamentEngine::getCorrelationValue()), refreshed from the
     // engine at the end of every processBlock() call. Safe to read from any
@@ -75,6 +84,12 @@ private:
     std::atomic<float>* haasEnabled = nullptr;
     std::atomic<float>* haasTimeMs = nullptr;
     std::atomic<float>* outputDb = nullptr;
+
+    // v0.2.0 additions - see ParameterIds.h.
+    std::atomic<float>* autoMonoSafetyFloorDb = nullptr;
+    std::atomic<float>* autoMonoSafetyMultiband = nullptr;
+    std::atomic<float>* decorrelateEnabled = nullptr;
+    std::atomic<float>* decorrelateAmount = nullptr;
 
     std::atomic<float> correlationMeterValue { 0.0f };
 
