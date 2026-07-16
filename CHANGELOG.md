@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-16
+
+### Added
+
+- App icon: the plugin/standalone bundles now ship with the Firmament icon (`docs/assets/icon.png`, wired via `juce_add_plugin`'s `ICON_BIG`), per the suite-wide mandate that app icons ship from this version onward.
+
+### Fixed
+
+- Bass-mono crossover: the Linkwitz-Riley crossover's internal filter state was frozen while the section was disabled (`Bass Mono Freq` at 0 Hz), so re-engaging it - e.g. automation sweeping back up through 0 Hz - resumed filtering from a stale snapshot and produced an audible transient. The crossover now keeps tracking the live Side signal while disabled (the same "always process, conditionally use" pattern Haas Mode's delay line already used), making re-engagement transient-free. ([#12](https://github.com/basilica-audio/firmament/issues/12))
+- Auto Mono Safety: flipping the on/off toggle applied the correlation-derived Side attenuation as an instant step - up to ~9 dB in a single sample when the (always-running) correlation estimate was already settled at its floor. The toggle now crossfades between bypassed and engaged over the same ~50 ms smoothing window used by the other parameters. ([#13](https://github.com/basilica-audio/firmament/issues/13))
+- Release workflow: the tag-triggered release build uploaded assets into a GitHub release that no job had created ("release not found"); an idempotent `create-release` job now creates the release object before both build jobs run (pattern reconciled with `basilica-audio/crypta`).
+
 ## [0.1.0] - 2026-07-14
 
 ### Added
