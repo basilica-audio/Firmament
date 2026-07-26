@@ -24,6 +24,7 @@ public:
 private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
 
     // One knob + label per float parameter, in signal-flow order.
     struct Knob
@@ -40,8 +41,17 @@ private:
         std::unique_ptr<ButtonAttachment> attachment;
     };
 
+    // One labelled dropdown per choice parameter (v0.3.0 mode selectors).
+    struct Selector
+    {
+        juce::ComboBox box;
+        juce::Label label;
+        std::unique_ptr<ComboBoxAttachment> attachment;
+    };
+
     void configureKnob (Knob& knob, const juce::String& parameterId, const juce::String& labelText);
     void configureToggle (Toggle& toggle, const juce::String& parameterId, const juce::String& labelText);
+    void configureSelector (Selector& selector, const juce::String& parameterId, const juce::String& labelText);
 
     FirmamentAudioProcessor& audioProcessor;
 
@@ -70,6 +80,17 @@ private:
     Toggle autoMonoSafetyMultibandToggle;
     Toggle decorrelateEnabledToggle;
     Knob decorrelateAmountKnob;
+
+    // Row 4/5: v0.3.0 additions (binding brief) - mode selectors, the
+    // 3-band high split, and the compensation/audition switches. Minimal
+    // generic controls only; the photoreal GUI is M3 scope.
+    Selector decorrelateModeSelector;
+    Selector bassMonoModeSelector;
+    Selector safetyModeSelector;
+    Knob highSplitKnob;
+    Knob highWidthKnob;
+    Toggle widthCompToggle;
+    Toggle monoAuditionToggle;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FirmamentAudioProcessorEditor)
 };

@@ -120,6 +120,71 @@ namespace frmm
             50.0f,
             juce::AudioParameterFloatAttributes().withLabel ("%")));
 
+        //======================================================================
+        // v0.3.0 additions below (binding brief, see ParameterIds.h). All
+        // seven default to exact v0.2.0 behaviour (Classic modes, high split
+        // off, Smooth safety, compensation/audition off), so existing
+        // sessions/presets load bit-identically unless a user opts in.
+
+        // Decorrelate Mode: Classic (v0.2.0 cascade) / Velvet Dense (OVN30)
+        // / Velvet Sparse (OVN15). Default Classic.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::decorrelateMode, 1 },
+            "Decorrelate Mode",
+            juce::StringArray { "Classic", "Velvet Dense", "Velvet Sparse" },
+            0));
+
+        // Bass Mono Mode: Classic / Phase Matched / Linear Phase. Default
+        // Classic. Linear Phase is the plugin's only latency-inducing path
+        // (documented in the manual; hosts renegotiate PDC on switch).
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::bassMonoMode, 1 },
+            "Bass Mono Mode",
+            juce::StringArray { "Classic", "Phase Matched", "Linear Phase" },
+            0));
+
+        // High Split: 0 (off) - 8000 Hz, skew 0.35 biases resolution toward
+        // the 1-4 kHz imaging sweet spot; the 0 Hz "off" sentinel mirrors
+        // bassMonoFreq's convention. Internally clamped to at least
+        // 2 * bassMonoFreq while both crossovers are engaged.
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::highSplitFreq, 1 },
+            "High Split",
+            juce::NormalisableRange<float> (0.0f, 8000.0f, 0.1f, 0.35f),
+            0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("Hz")));
+
+        // High Width: 0-200%, default 100% (unity; also inert while High
+        // Split is off).
+        layout.add (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID { ParamIDs::highWidth, 1 },
+            "High Width",
+            juce::NormalisableRange<float> (0.0f, 200.0f, 0.1f),
+            100.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        // Safety Response: Smooth (v0.2.0 static 300 ms map) / Dynamic
+        // (30 ms detector, 5 ms attack / 250 ms release ballistics). Default
+        // Smooth.
+        layout.add (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID { ParamIDs::safetyMode, 1 },
+            "Safety Response",
+            juce::StringArray { "Smooth", "Dynamic" },
+            0));
+
+        // Width Compensation: off by default (mastering convention - width
+        // changes side level only).
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::widthComp, 1 },
+            "Width Compensation",
+            false));
+
+        // Mono Audition: off by default.
+        layout.add (std::make_unique<juce::AudioParameterBool> (
+            juce::ParameterID { ParamIDs::monoAudition, 1 },
+            "Mono Audition",
+            false));
+
         return layout;
     }
 }
