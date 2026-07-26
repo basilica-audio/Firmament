@@ -1,0 +1,27 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.firmament",
+    "pluginVersion": "0.3.0",
+    "name": "Mastering Linear Phase Bass Mono",
+    "category": "Master",
+    "parameters": {
+        "width": 100.0,
+        "bassMonoFreq": 120.0,
+        "output": 0.0,
+        "lowWidth": 0.0,
+        "autoMonoSafety": 1.0,
+        "haasEnabled": 0.0,
+        "haasTimeMs": 20.0,
+        "autoMonoSafetyFloorDb": -9.1,
+        "autoMonoSafetyMultiband": 0.0,
+        "decorrelateEnabled": 0.0,
+        "decorrelateAmount": 50.0,
+        "decorrelateMode": 0.0,
+        "bassMonoMode": 2.0,
+        "highSplitFreq": 0.0,
+        "highWidth": 100.0,
+        "safetyMode": 0.0,
+        "widthComp": 0.0,
+        "monoAudition": 0.0
+    }
+}

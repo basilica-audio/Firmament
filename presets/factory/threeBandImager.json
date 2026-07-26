@@ -1,0 +1,27 @@
+{
+    "format": "basilica-preset-1",
+    "plugin": "com.yvesvogl.firmament",
+    "pluginVersion": "0.3.0",
+    "name": "Three Band Imager",
+    "category": "Widening",
+    "parameters": {
+        "width": 110.0,
+        "bassMonoFreq": 110.0,
+        "output": 0.0,
+        "lowWidth": 40.0,
+        "autoMonoSafety": 1.0,
+        "haasEnabled": 0.0,
+        "haasTimeMs": 20.0,
+        "autoMonoSafetyFloorDb": -9.1,
+        "autoMonoSafetyMultiband": 1.0,
+        "decorrelateEnabled": 0.0,
+        "decorrelateAmount": 50.0,
+        "decorrelateMode": 0.0,
+        "bassMonoMode": 1.0,
+        "highSplitFreq": 2500.0,
+        "highWidth": 140.0,
+        "safetyMode": 1.0,
+        "widthComp": 0.0,
+        "monoAudition": 0.0
+    }
+}
