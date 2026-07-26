@@ -153,3 +153,130 @@ TEST_CASE ("Haas Mode: reset() clears delay-line state without leaking stale aud
     CHECK (TestHelpers::allSamplesFinite (silentBuffer));
     CHECK (TestHelpers::peakAbsolute (silentBuffer) < 1.0e-6f);
 }
+
+// ===========================================================================
+// v0.3.0 Haas & toggle polish (binding brief, section 3.7).
+
+TEST_CASE ("Haas polish: toggling haasEnabled mid-stream crossfades instead of stepping the Right channel", "[dsp][engine][haas][v0.3.0]")
+{
+    FirmamentEngine engine;
+    engine.setWidthPercent (100.0f);
+    engine.setBassMonoFrequencyHz (0.0f);
+    engine.setHaasEnabled (false);
+    engine.setHaasTimeMs (25.0f);
+    engine.setOutputDb (0.0f);
+    engine.prepare (makeTestSpec());
+
+    // Steady mono program (Side == 0): with a 25 ms delay engaged, dry and
+    // delayed Right differ substantially, so a v0.2.0-style instant gate
+    // would step the output by up to the full signal scale in one sample.
+    juce::AudioBuffer<float> buffer (2, blockSize);
+
+    float maxStep = 0.0f;
+    float previousRight = 0.0f;
+    bool first = true;
+    float maxInputStep = 0.0f;
+
+    for (int block = 0; block < 12; ++block)
+    {
+        if (block == 4)
+            engine.setHaasEnabled (true); // toggle mid-stream
+        if (block == 8)
+            engine.setHaasEnabled (false); // and back
+
+        auto* left = buffer.getWritePointer (0);
+        auto* right = buffer.getWritePointer (1);
+        float previousInput = 0.0f;
+
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const auto phase = juce::MathConstants<double>::twoPi * 620.0
+                                * static_cast<double> (block * blockSize + i) / testSampleRate;
+            const auto value = 0.5f * static_cast<float> (std::sin (phase));
+            left[i] = value;
+            right[i] = value;
+
+            if (i > 0)
+                maxInputStep = std::max (maxInputStep, std::abs (value - previousInput));
+            previousInput = value;
+        }
+
+        juce::dsp::AudioBlock<float> audioBlock (buffer);
+        engine.process (audioBlock);
+
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const auto sample = buffer.getSample (1, i);
+
+            if (! first)
+                maxStep = std::max (maxStep, std::abs (sample - previousRight));
+
+            previousRight = sample;
+            first = false;
+        }
+    }
+
+    // The output's sample-to-sample steps must stay on the scale of the
+    // program's own slew (620 Hz sine at 0.5 -> ~0.04/sample), plus the
+    // crossfade's gentle slope - far below the ~1.0 step an instant gate on
+    // an anti-phase-delayed copy could produce.
+    CAPTURE (maxStep, maxInputStep);
+    CHECK (maxStep < maxInputStep * 2.0f);
+}
+
+TEST_CASE ("Haas polish: automating Haas Time is applied per sample (no per-block zipper steps)", "[dsp][engine][haas][v0.3.0]")
+{
+    FirmamentEngine engine;
+    engine.setWidthPercent (100.0f);
+    engine.setBassMonoFrequencyHz (0.0f);
+    engine.setHaasEnabled (true);
+    engine.setHaasTimeMs (10.0f);
+    engine.setOutputDb (0.0f);
+    engine.prepare (makeTestSpec());
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+
+    // Settle at 10 ms first.
+    for (int block = 0; block < 4; ++block)
+    {
+        TestHelpers::fillWithSine (buffer, testSampleRate, 500.0, 0.5f, static_cast<juce::int64> (block) * blockSize);
+        juce::dsp::AudioBlock<float> audioBlock (buffer);
+        engine.process (audioBlock);
+    }
+
+    // Sweep the delay time hard while feeding a steady sine; the per-sample
+    // smoothed delay through Lagrange interpolation must keep the output
+    // slew bounded (a once-per-block setDelay() step of ~0.6 ms jumps the
+    // read position by ~30 samples at once - an audible zipper click).
+    float maxStep = 0.0f;
+    float previousRight = 0.0f;
+    bool first = true;
+
+    for (int block = 0; block < 12; ++block)
+    {
+        engine.setHaasTimeMs (10.0f + 2.0f * static_cast<float> (block)); // 10 -> 32 ms sweep
+
+        TestHelpers::fillWithSine (buffer, testSampleRate, 500.0, 0.5f, static_cast<juce::int64> (4 + block) * blockSize);
+        juce::dsp::AudioBlock<float> audioBlock (buffer);
+        engine.process (audioBlock);
+
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const auto sample = buffer.getSample (1, i);
+
+            if (! first)
+                maxStep = std::max (maxStep, std::abs (sample - previousRight));
+
+            previousRight = sample;
+            first = false;
+        }
+
+        REQUIRE (TestHelpers::allSamplesFinite (buffer));
+    }
+
+    // A 500 Hz sine at 0.5 slews ~0.033/sample; pitch modulation from the
+    // sweeping delay raises that somewhat, but nothing near the ~1.0-scale
+    // discontinuities of per-block delay jumps.
+    CAPTURE (maxStep);
+    CHECK (maxStep < 0.15f);
+}

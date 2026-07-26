@@ -40,7 +40,7 @@ TEST_CASE ("FirmamentEngine stays finite, zero-latency, and correctly bounded ac
         spec.numChannels = 2;
         engine.prepare (spec);
 
-        CHECK (FirmamentEngine::getLatencySamples() == 0);
+        CHECK (engine.getLatencySamples() == 0); // v0.3.0: dynamic, but 0 in every minimum-phase mode
 
         for (int block = 0; block < numBlocksPerRate; ++block)
         {
@@ -81,7 +81,7 @@ TEST_CASE ("FirmamentEngine v0.2.0 additions (multiband safety, Decorrelate, ext
         spec.numChannels = 2;
         engine.prepare (spec);
 
-        CHECK (FirmamentEngine::getLatencySamples() == 0);
+        CHECK (engine.getLatencySamples() == 0); // v0.3.0: dynamic, but 0 in every minimum-phase mode
 
         for (int block = 0; block < numBlocksPerRate; ++block)
         {

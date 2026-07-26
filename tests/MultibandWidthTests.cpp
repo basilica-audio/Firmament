@@ -1,10 +1,14 @@
 #include "dsp/FirmamentEngine.h"
+#include "PluginProcessor.h"
+#include "params/ParameterIds.h"
 #include "TestHelpers.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <cstring>
+#include <vector>
 
 // Multiband width (M1): with the bass-mono crossover engaged (BassMonoFreq >
 // 0), the Side signal is split into a low and a high band, each scaled by
@@ -426,4 +430,254 @@ TEST_CASE ("Bass Mono Freq range extension: forced-mono-below-crossover and magn
             CHECK (outputRms == Catch::Approx (referenceRms).epsilon (0.02));
         }
     }
+}
+
+// ===========================================================================
+// v0.3.0 3-band width (binding brief, sections 3.3/6.12).
+
+TEST_CASE ("3-band flat sum: with all widths at 100% and the high split active, the Side band sum (incl. low-band AP2 compensation) is flat within +/-0.1 dB", "[dsp][engine][multiband][highsplit][v0.3.0]")
+{
+    constexpr int analysisOrder = 15;
+    constexpr int analysisSize = 1 << analysisOrder;
+
+    const auto measureSideFlatness = [] (float bassMonoHz, float highSplitHz)
+    {
+        FirmamentEngine engine;
+        engine.setWidthPercent (100.0f);
+        engine.setLowWidthPercent (100.0f);
+        engine.setHighWidthPercent (100.0f);
+        engine.setBassMonoFrequencyHz (bassMonoHz);
+        engine.setHighSplitFrequencyHz (highSplitHz);
+        engine.setOutputDb (0.0f);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = testSampleRate;
+        spec.maximumBlockSize = 512;
+        spec.numChannels = 2;
+        engine.prepare (spec);
+
+        // Anti-phase impulse: Mid == 0, so the Left output is exactly the
+        // Side band-sum path.
+        std::vector<float> response;
+        juce::AudioBuffer<float> buffer (2, 512);
+        bool sent = false;
+
+        while (static_cast<int> (response.size()) < analysisSize)
+        {
+            buffer.clear();
+
+            if (! sent)
+            {
+                buffer.setSample (0, 0, 0.5f);
+                buffer.setSample (1, 0, -0.5f);
+                sent = true;
+            }
+
+            juce::dsp::AudioBlock<float> block (buffer);
+            engine.process (block);
+            response.insert (response.end(), buffer.getReadPointer (0), buffer.getReadPointer (0) + 512);
+        }
+
+        response.resize (analysisSize);
+        const auto spectrum = TestHelpers::magnitudeSpectrum (response, analysisOrder, false);
+
+        const auto binLow = static_cast<int> (std::ceil (20.0 * analysisSize / testSampleRate));
+        const auto binHigh = static_cast<int> (std::floor (20000.0 * analysisSize / testSampleRate));
+
+        double maxDeviationDb = 0.0;
+
+        for (int bin = binLow; bin <= binHigh; ++bin)
+        {
+            // Relative to the input impulse's 0.5 amplitude (unity gain).
+            const auto magnitudeDb = 20.0 * std::log10 (static_cast<double> (spectrum[static_cast<size_t> (bin)]) / 0.5 + 1.0e-30);
+            maxDeviationDb = std::max (maxDeviationDb, std::abs (magnitudeDb));
+        }
+
+        return maxDeviationDb;
+    };
+
+    // Both crossovers active (3 bands): the low band's AP2(highSplit)
+    // compensation is what keeps this flat - without it the sum would ripple
+    // around the second crossover.
+    const auto threeBand = measureSideFlatness (120.0f, 2500.0f);
+    CAPTURE (threeBand);
+    CHECK (threeBand < 0.1);
+
+    // High split alone (bass-mono off, 2 bands at the new crossover).
+    const auto highSplitOnly = measureSideFlatness (0.0f, 2500.0f);
+    CAPTURE (highSplitOnly);
+    CHECK (highSplitOnly < 0.1);
+}
+
+TEST_CASE ("High Width narrows/widens only the band above the high split", "[dsp][engine][multiband][highsplit][v0.3.0]")
+{
+    // High Width 0% with width 100%: content above the split collapses to
+    // mono, content between the crossovers keeps its width.
+    FirmamentEngine engine;
+    engine.setWidthPercent (100.0f);
+    engine.setLowWidthPercent (100.0f);
+    engine.setHighWidthPercent (0.0f);
+    engine.setBassMonoFrequencyHz (0.0f);
+    engine.setHighSplitFrequencyHz (2000.0f);
+    engine.setOutputDb (0.0f);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = testSampleRate;
+    spec.maximumBlockSize = 2048;
+    spec.numChannels = 2;
+    engine.prepare (spec);
+
+    // Two anti-phase (pure Side) tones: one well below the split, one well
+    // above it.
+    juce::AudioBuffer<float> buffer (2, 2048);
+
+    auto renderAndMeasureSideTone = [&] (double frequency)
+    {
+        double sidePower = 0.0;
+
+        for (int block = 0; block < 24; ++block)
+        {
+            auto* left = buffer.getWritePointer (0);
+            auto* right = buffer.getWritePointer (1);
+
+            for (int i = 0; i < 2048; ++i)
+            {
+                const auto phase = juce::MathConstants<double>::twoPi * frequency
+                                    * static_cast<double> (block * 2048 + i) / testSampleRate;
+                const auto value = 0.4f * static_cast<float> (std::sin (phase));
+                left[i] = value;
+                right[i] = -value;
+            }
+
+            juce::dsp::AudioBlock<float> audioBlock (buffer);
+            engine.process (audioBlock);
+
+            if (block >= 20) // settled tail only
+            {
+                for (int i = 0; i < 2048; ++i)
+                {
+                    const auto side = 0.5f * (buffer.getSample (0, i) - buffer.getSample (1, i));
+                    sidePower += static_cast<double> (side) * side;
+                }
+            }
+        }
+
+        return std::sqrt (sidePower);
+    };
+
+    const auto lowToneSide = renderAndMeasureSideTone (300.0);
+    engine.reset();
+    const auto highToneSide = renderAndMeasureSideTone (8000.0);
+
+    CAPTURE (lowToneSide, highToneSide);
+
+    // The 300 Hz tone (below the split) keeps its Side energy; the 8 kHz
+    // tone (above the split, High Width 0%) loses at least 30 dB of it.
+    CHECK (lowToneSide > 0.1);
+    CHECK (highToneSide < lowToneSide * 0.0316);
+}
+
+TEST_CASE ("High split sentinel null: highSplitFreq == 0 renders BIT-IDENTICALLY to the same binary with the v0.3.0 parameters never touched, and nulls against the frozen v0.2.0 reference", "[dsp][engine][multiband][highsplit][state][v0.3.0]")
+{
+    // Part 1 (engine-level, tolerance 0): explicitly setting the v0.3.0
+    // parameters to their neutral values (high split off, High Width
+    // anything - it is inert at the sentinel) must be indistinguishable
+    // from never touching them.
+    const auto render = [] (bool touchNewParameters)
+    {
+        FirmamentEngine engine;
+        engine.setWidthPercent (140.0f);
+        engine.setLowWidthPercent (30.0f);
+        engine.setBassMonoFrequencyHz (120.0f);
+        engine.setAutoMonoSafetyEnabled (true);
+        engine.setOutputDb (0.0f);
+
+        if (touchNewParameters)
+        {
+            engine.setHighSplitFrequencyHz (0.0f); // sentinel
+            engine.setHighWidthPercent (137.0f); // inert while the sentinel is 0
+            engine.setBassMonoMode (static_cast<int> (FirmamentEngine::BassMonoMode::classic));
+            engine.setDecorrelateMode (static_cast<int> (FirmamentEngine::DecorrelateMode::classic));
+            engine.setSafetyMode (static_cast<int> (FirmamentEngine::SafetyMode::smooth));
+        }
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = testSampleRate;
+        spec.maximumBlockSize = 512;
+        spec.numChannels = 2;
+        engine.prepare (spec);
+
+        TestHelpers::DeterministicPinkNoise pinkLeft (44444u), pinkRight (55555u);
+        std::vector<float> output;
+        juce::AudioBuffer<float> buffer (2, 512);
+
+        for (int block = 0; block < 200; ++block)
+        {
+            TestHelpers::fillStereoWithDeterministicPinkNoise (buffer, pinkLeft, pinkRight, 0.35f);
+            juce::dsp::AudioBlock<float> audioBlock (buffer);
+            engine.process (audioBlock);
+
+            output.insert (output.end(), buffer.getReadPointer (0), buffer.getReadPointer (0) + 512);
+            output.insert (output.end(), buffer.getReadPointer (1), buffer.getReadPointer (1) + 512);
+        }
+
+        return output;
+    };
+
+    const auto untouched = render (false);
+    const auto sentinel = render (true);
+
+    REQUIRE (untouched.size() == sentinel.size());
+
+    float peakDifference = 0.0f;
+
+    for (size_t i = 0; i < untouched.size(); ++i)
+        peakDifference = std::max (peakDifference, std::abs (untouched[i] - sentinel[i]));
+
+    CHECK (peakDifference <= 0.0f); // bit-identical (brief 6.12/6.1a)
+
+    // Part 2 (processor-level, cross-version): the same sentinel state must
+    // null against the frozen v0.2.0 reference render within the documented
+    // platform tolerance (see TestHelpers::MigrationProtocol).
+    const auto referenceFile = juce::File (__FILE__).getSiblingFile ("fixtures").getChildFile ("v020-reference-render.f32");
+    REQUIRE (referenceFile.existsAsFile());
+
+    juce::MemoryBlock referenceBytes;
+    REQUIRE (referenceFile.loadFileAsData (referenceBytes));
+    REQUIRE (referenceBytes.getSize() == TestHelpers::MigrationProtocol::totalSamples * 2 * sizeof (float));
+
+    std::vector<float> reference (TestHelpers::MigrationProtocol::totalSamples * 2);
+    std::memcpy (reference.data(), referenceBytes.getData(), referenceBytes.getSize());
+
+    FirmamentAudioProcessor processor;
+
+    const auto setParam = [&] (const char* id, float realValue)
+    {
+        auto* param = processor.apvts.getParameter (id);
+        REQUIRE (param != nullptr);
+        param->setValueNotifyingHost (param->convertTo0to1 (realValue));
+    };
+
+    // The frozen fixture settings plus every v0.3.0 parameter explicitly
+    // set to its neutral value (High Width deliberately non-default - inert
+    // at the sentinel).
+    setParam (ParamIDs::width, 140.0f);
+    setParam (ParamIDs::bassMonoFreq, 120.0f);
+    setParam (ParamIDs::autoMonoSafety, 1.0f);
+    setParam (ParamIDs::decorrelateEnabled, 1.0f);
+    setParam (ParamIDs::highSplitFreq, 0.0f);
+    setParam (ParamIDs::highWidth, 137.0f);
+    setParam (ParamIDs::bassMonoMode, 0.0f);
+    setParam (ParamIDs::decorrelateMode, 0.0f);
+    setParam (ParamIDs::safetyMode, 0.0f);
+
+    const auto processed = TestHelpers::MigrationProtocol::render (processor);
+
+    float peakResidual = 0.0f;
+
+    for (size_t i = 0; i < processed.size(); ++i)
+        peakResidual = std::max (peakResidual, std::abs (processed[i] - reference[i]));
+
+    CAPTURE (peakResidual);
+    CHECK (peakResidual <= TestHelpers::MigrationProtocol::crossVersionTolerance());
 }
