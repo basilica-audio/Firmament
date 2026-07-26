@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-26
+
+SOTA DSP pass (binding brief `.scaffold/research/2026-07-25-sota/brief-firmament.md`;
+math sources in `docs/research-notes.md` Section 9). Headline: every widening
+mode except Haas is now provably mono-safe by construction - the velvet
+decorrelation modes fold down to mono bit-for-bit identically to the input.
+Every new parameter defaults to exact v0.2.0 behaviour, verified bit-exactly
+against a frozen v0.2.0 state fixture (`tests/StateTests.cpp`).
+
+### Added
+
+- **Velvet-noise decorrelation modes** (`decorrelateMode`: Classic / Velvet
+  Dense / Velvet Sparse): the published DAFx-18 "Optimized Velvet-Noise
+  Decorrelator" tap pairs (OVN30/OVN15, transcribed as data from the paper's
+  open-access tables) as sparse zero-latency FIRs, applied to the Side signal
+  only (`S' = (1-d)S + d*(VND_A(L)-VND_B(R))/2`, Mid dry) so the mono sum is
+  invariant by construction - measured fold-down dip ~0.0000003 dB vs 16 dB
+  for the unguarded Haas control on the same near-mono program. Tap times are
+  rescaled ms-true to the session rate and renormalised to unit energy.
+  Classic remains the bit-exact v0.2.0 R-only allpass cascade and the default.
+- **Bass Mono Mode selector** (`bassMonoMode`: Classic / Phase Matched /
+  Linear Phase): Phase Matched passes Mid through the companion AP2
+  (Q = 1/sqrt(2)) derived from the same prewarped coefficients as the LR4
+  crossover (measured inter-path phase error ~5e-6 degrees, negative control
+  179.8 degrees); Linear Phase switches the Side split to a Kaiser-sinc FIR
+  complementary crossover (perfect reconstruction ~7e-9 peak residual, 96 dB
+  side attenuation below 0.5*fc at Low Width 0) via juce::dsp::Convolution
+  with message-thread-only kernel handoff - the codebase's first
+  nonzero-latency path (N/2 = 2048 samples @48 kHz, reported dynamically via
+  setLatencySamples and verified against the measured impulse offset at
+  44.1/48/96/192 kHz).
+- **3-band width** (`highSplitFreq` 0 + 500-8000 Hz, `highWidth` 0-200%): a
+  second Side-path LR4 above the bass-mono split with the standard 3-way
+  Linkwitz-Riley low-band AP2 flat-sum discipline (band sum flat within
+  +/-0.1 dB, measured 0.000003 dB); sentinel 0 = off is bit-identical to the
+  2-band path.
+- **Dynamic safety ballistics** (`safetyMode`: Smooth / Dynamic): a fast
+  30 ms correlation detector driving the unchanged v0.2.0 attenuation map
+  through a dedicated asymmetric one-pole (attack 5 ms / release 250 ms as
+  times-to-90%-settling), per band in Multiband mode. A binding energy-gate
+  rule now makes every correlation estimate decay to 0 under silence
+  (display meters and guard detectors alike) - fixes both the "meter shows
+  +/-1 on silence" trap and the guard latching -1 after an anti-phase burst
+  into silence.
+- **Equal-power width compensation** (`widthComp`, off by default): post-decode
+  makeup g = 1/sqrt(a^2+b^2) from the broadband Width, RMS constant within
+  +/-0.5 dB across width 0-200% on decorrelated program.
+- **Mono Audition** (`monoAudition`): post-everything (L+R)/2 monitor switch,
+  50 ms crossfaded, excluded from factory presets.
+- **Meter surface**: per-band input correlation (including the new third
+  band) and a broadband output (post-processing) correlation exported as
+  atomics for the M3 GUI; all energy-gated.
+- **State-schema versioning**: `stateVersion = 2` stamped on save; absent =
+  version 1 (v0.1.x/v0.2.0), which loads tolerantly with all new parameters
+  at neutral defaults (the neutral-default design is the migration).
+  Migration verified two ways: tolerance-0 same-binary null, and
+  <= -140 dBFS cross-version null against a frozen v0.2.0 reference render
+  checked into `tests/fixtures/`.
+- **Factory presets** (additive; the 10 v0.2.0 presets are untouched):
+  `Velvet Width`, `Mastering: Linear Phase Bass Mono`, `Three-Band Imager`.
+- **AllocationGuardTests**: thread-scoped global operator new/delete override
+  asserting zero audio-thread heap allocations under every mode combination,
+  including Linear Phase and mode switches mid-run, plus the 16384-sample
+  oversized-block chunk guard.
+
+### Changed
+
+- **Haas polish**: delay interpolation Linear -> Lagrange3rd (fractional-delay
+  HF response improves; integer-sample delays, including the 20 ms default at
+  48 kHz = 960 samples, are unchanged) and per-sample smoothed delay-time
+  application (kills the automation pitch-zipper).
+- **Toggle discipline**: `haasEnabled` and `decorrelateEnabled` are now 50 ms
+  crossfades instead of instant per-block gates, matching the Auto Mono
+  Safety toggle discipline.
+- Version bumped to 0.3.0; 7 new parameters, all defaulting to exact v0.2.0
+  behaviour; no existing parameter IDs, ranges, or defaults changed.
+
 ## [0.2.0] - 2026-07-16
 
 Research-driven deep-dive rework (`docs/design-brief.md`, `docs/research-notes.md`)

@@ -181,6 +181,54 @@ None of the searched sources publish an exact numeric floor-gain value (e.g. Fir
 hardcoded 0.35 linear / -9.1 dB), confirming this specific number is, and remains, a
 **reasoned** internal choice rather than a sourced one.
 
+## 9. v0.3.0 SOTA DSP pass — velvet-noise decorrelation, phase-matched/linear-phase crossovers, guard ballistics
+
+Sources for the v0.3.0 feature set (binding brief `.scaffold/research/2026-07-25-sota/brief-firmament.md`;
+full URLs and derivations in that directory's `research-stereo-imaging.md` Section 6):
+
+- **B. Alary, A. Politis, V. Välimäki, "Velvet-Noise Decorrelator", Proc. DAFx-17, Edinburgh, 2017** —
+  the sparse velvet-noise FIR decorrelation approach (segmented exponential decay, sparse
+  convolution cost model). Open access.
+- **S. J. Schlecht, B. Alary, V. Välimäki, E. A. P. Habets, "Optimized Velvet-Noise
+  Decorrelator", Proc. DAFx-18, Aveiro, 2018** — the optimization (third-octave-smoothed
+  log-magnitude RMSE objective, grid-cell tap confinement, pair selection by frequency-mean
+  absolute coherence) and, critically, the **published winning coefficient pairs** (Tables 1-2:
+  OVN30 and OVN15 tap times/gains @44.1 kHz) that `src/dsp/VelvetDecorrelator.h` transcribes as
+  data. The paper also documents the < 1.3 dB smoothed-magnitude cost of integer tap rounding
+  (the basis for the ms-true `k_i = round(tau_i * fs / 44100)` rescale) and OVN15's slightly
+  higher inter-channel coherence versus OVN30 (the basis for its relaxed 0.35 zero-lag bound in
+  `tests/VelvetDecorrelatorTests.cpp`). Open access. **No code was taken from the authors'
+  reference implementations — the coefficients are data from the paper's published tables.**
+- **Implementation finding (ours, reproducible from the published tables):** the OVN30 pair
+  *sum* `A + B` carries a ~17 dB third-octave notch around 320 Hz @48 kHz. The DAFx-18
+  optimization constrains per-filter flatness and pair *coherence*, not the pair *sum*, so a
+  raw per-channel wet mix `L' = (1-d)L + d·A(L)`, `R' = (1-d)R + d·B(R)` cannot keep the mono
+  fold-down of near-mono program within 3 dB at full amount. Firmament therefore applies the
+  velvet wet mix to the Side signal only — `S' = (1-d)S + d·(A(L)-B(R))/2`, Mid dry — which
+  keeps the widening content identical to the published topology while making the mono sum
+  invariant by construction (see `docs/architecture.md`, "Velvet-noise decorrelation").
+- **Linkwitz-Riley / allpass phase identity** (standard crossover theory; also documented in
+  JUCE 8.0.14's own `LinkwitzRileyFilter` class docs): the LR4 low+high sum is an allpass whose
+  phase equals each band's phase, and the companion `AP2(s) = (s² - √2·ω0·s + ω0²)/(s² + √2·ω0·s + ω0²)`
+  (Q = 1/√2) tracks it exactly — the basis for the Phase Matched mode
+  (`src/dsp/PhaseMatchedAllpass.h`) and the 3-band low-band AP2 discipline.
+- **Kaiser-windowed sinc FIR design** (standard DSP practice; Kaiser window β = 9 ≈ 90 dB
+  stopband): the Linear Phase bass-mono kernel (`src/dsp/LinearPhaseCrossover.cpp`), with the
+  complementary band derived by spectral subtraction from a pure delay (perfect reconstruction
+  by construction).
+- **beis.de, "About the Correlation Meter"** (already cited in Section 5) — the silence rule
+  (correlation is undefined with a silent channel; never display ±1 there) that v0.3.0
+  generalizes into the binding energy-gate decay rule for *every* estimator, including the
+  Dynamic guard's fast detectors (a leaky Pearson ratio is silence-invariant, so an ungated
+  guard would latch -1 after an anti-phase burst into silence).
+- **Width guard ballistics** (research-stereo-imaging.md Section 2.5): fast detector τ = 30 ms,
+  attack 5 ms / release 250 ms as **times to 90% settling** (internal one-pole τ = t90/ln 10),
+  asymmetric dedicated one-pole, stability from the monotone side-gain → output-correlation
+  relationship.
+- **Equal-power width compensation** (research-stereo-imaging.md Section 2.1): with
+  a = (1+w)/2, b = (1-w)/2, makeup g = 1/√(a²+b²), exact for decorrelated equal-power channels,
+  normalized so g(1) = 1.
+
 ## Honesty / sourcing caveats for this research pass
 
 - The Brainworx bx_digital V2 manual PDF (`media.uaudio.com/assetlibrary/b/x/bx_digital_v2_manual.pdf`)
