@@ -2,9 +2,13 @@
 
 #include <juce_dsp/juce_dsp.h>
 
+#include "LinearPhaseCrossover.h"
 #include "MidSideCodec.h"
+#include "PhaseMatchedAllpass.h"
+#include "VelvetDecorrelator.h"
 
 #include <array>
+#include <vector>
 
 // The complete Firmament signal path, independent of juce::AudioProcessor so
 // it can be exercised directly by unit tests without instantiating a full
@@ -13,9 +17,13 @@
 //
 // Signal flow (see docs/architecture.md for the full diagram):
 //
-//   L/R -> encode M/S -> [multiband] Width scale on Side -> [optional]
-//       Auto Mono Safety gain on Side -> decode M/S -> L/R -> [optional]
-//       Haas Mode delay on Right -> Output trim
+//   L/R -> encode M/S -> [multiband] Width scale on Side (2 or 3 bands)
+//       -> [optional] Auto Mono Safety gain on Side -> decode M/S -> L/R
+//       -> [optional] equal-power width compensation -> [optional] Haas
+//       Mode delay on Right XOR Decorrelate -> Output trim -> [optional]
+//       Mono Audition
+//
+// ============================ v0.2.0 heritage ============================
 //
 // Multiband width: when the bass-mono crossover is engaged (BassMonoFreq >
 // 0), the derived Side stream is split into a low and a high band by the
@@ -25,117 +33,146 @@
 // band by a constant commutes exactly with the (linear) filtering that
 // produced it, so at LowWidth's default of 0% - where the low band's
 // contribution is exactly zero regardless of what it contains - this
-// reproduces the v0.1 behaviour of forcing the low band to silence exactly,
-// a strict generalisation rather than a behaviour change. At any other
-// LowWidth, or whenever both bands are re-summed with a nonzero gain, the
-// result is NOT a null/identity operation even at LowWidth == Width == 100%:
-// per JUCE's own documentation, a Linkwitz-Riley crossover's low+high sum is
-// a flat-*magnitude* allpass, not the original signal (see the class-level
-// note on the crossover itself, below) - this is the standard, expected
-// characteristic of any Linkwitz-Riley-crossover-based multiband processor.
-// With the crossover off (BassMonoFreq == 0), Width alone scales the entire
-// Side signal as a single band, exactly as in v0.1.
+// reproduces the v0.1 behaviour of forcing the low band to silence exactly.
+// Per JUCE's own documentation, a Linkwitz-Riley crossover's low+high sum is
+// a flat-*magnitude* allpass, not the original signal - this is the
+// standard, expected characteristic of any Linkwitz-Riley-crossover-based
+// multiband processor. With the crossover off (BassMonoFreq == 0), Width
+// alone scales the entire Side signal as a single band, exactly as in v0.1.
 //
 // Auto Mono Safety: a running, leaky-integrated correlation estimate of the
 // plugin's *input* L/R (computed every sample regardless of whether the
-// safety feature is engaged, so it is always available to drive a future
-// GUI meter - see getCorrelationValue()) is used, when enabled, to further
-// attenuate the Side signal in proportion to how out-of-phase the input is.
-// Because this only ever scales Side and never touches Mid, it preserves
-// the exact same mono-sum invariant (L + R == 2 * Mid at any setting) that
-// Width and multiband width already rely on - see docs/architecture.md. The
-// on/off toggle itself is crossfaded (not an instant gate), since the
-// correlation estimate keeps running while the feature is off and can
-// already be sitting at its floor the instant it is engaged.
-//
-// v0.2.0 (docs/design-brief.md) research-driven revisions to Auto Mono
-// Safety, all sourced from documented professional correlation-meter
-// convention:
-//   - Ballistics: correlationTimeConstantSeconds moved from 200ms to 300ms
-//     (a reasoned compromise toward, not all the way to, the ~600ms
-//     documented for a pure *display* meter - Auto Mono Safety is a live
-//     control-loop input as well as a future meter feed).
-//   - Dead-zone: correlation in [autoMonoSafetyDeadZone, 1.0] (-0.10 to 1.0)
-//     now yields full (1.0) safety gain, not just correlation >= 0 - "the
-//     occasional small deviation into the negative side is usually
-//     insignificant" (documented correlation-meter practice). The ramp
-//     toward the floor now runs from -0.10 down to -1.0.
-//   - The floor gain is now user-exposed (autoMonoSafetyFloorDb, -24 to
-//     0 dB, default -9.1 dB - reproduces the old hardcoded 0.35 linear floor
-//     bit-for-bit at default) rather than a fixed internal constant.
-//   - Multiband (autoMonoSafetyMultiband, off by default): when on and the
-//     bass-mono crossover is engaged, the correlation-derived gain is
-//     computed and applied independently for the low/high bands already
-//     split out by that crossover (via a second pair of mono
-//     LinkwitzRileyFilters run on the raw input L/R, always processing -
-//     same "always process, conditionally use" pattern as the bass-mono
-//     crossover itself), instead of one broadband estimate scaling both.
-//     When off, or bass-mono is off, behaviour is unchanged (single
-//     broadband estimate).
+// safety feature is engaged) is used, when enabled, to attenuate the Side
+// signal in proportion to how out-of-phase the input is. Because this only
+// ever scales Side and never touches Mid, it preserves the exact mono-sum
+// invariant (L + R == 2 * Mid at any setting). The on/off toggle is
+// crossfaded (not an instant gate). v0.2.0 ballistics/dead-zone/floor:
+// 300 ms leaky integrator, dead-zone [-0.10, 1.0] -> full gain, linear ramp
+// to the user floor (-24..0 dB, default -9.1 dB) at correlation -1.
 //
 // Haas Mode: an alternative, non-M/S widening technique applied *after* M/S
 // decode - the Right channel is delayed by HaasTimeMs relative to Left via a
 // juce::dsp::DelayLine. Unlike Width-based widening, this does NOT preserve
-// the exact mono-sum invariant (summing two channels that are offset in time
-// is not equivalent to summing the original, undelayed pair) - it trades
-// that guarantee for a different, well-known psychoacoustic widening effect
-// (the precedence effect). It is off by default and orthogonal to
-// Width/multiband width/Auto Mono Safety, which all operate purely in the
-// M/S domain before Haas Mode's post-decode delay is applied.
+// the exact mono-sum invariant - it trades that guarantee for the
+// well-known precedence-effect widening. Off by default.
 //
-// Decorrelate (v0.2.0, docs/design-brief.md): a second, gentler alternative
-// widening technique for near-mono material, also applied post-M/S-decode to
-// the Right channel, alongside Haas Mode. Where Haas Mode trades the exact
-// mono-sum guarantee for a strong precedence-effect delay (comb-filtering on
-// mono fold-down), Decorrelate trades a much smaller, documented cost (mild
-// spectral ripple, typically 1-2 dB) via a cascade of allpass IIR filters
-// (juce::dsp::IIR::Filter, spread across several fixed frequencies) blended
-// with the dry Right signal by decorrelateAmount. Like the bass-mono
-// crossover's dual-output processSample() and Haas Mode's delay line, the
-// allpass cascade always processes every sample (even while disabled) so its
-// internal state never goes stale; only the blend is conditional. Decorrelate
-// and Haas Mode are mutually exclusive: whenever both are enabled,
-// Decorrelate takes effect and the Haas delay line is pinned to 0 samples
-// (an exact passthrough) for as long as Decorrelate stays engaged - both
-// operate on the same post-decode Right channel for the same underlying
-// goal, and stacking them would make each one's already-approximate
-// mono-fold-down cost impossible to reason about independently. Decorrelate
-// is presented in the manual as "gentler, more mono-tolerant", not
-// "mono-safe" - it remains, like Haas Mode, an explicit, documented exception
-// to the mono-sum invariant, just a smaller one; the Width/Low Width/Auto
-// Mono Safety invariant itself (broadband or multiband) is completely
-// unaffected by either, since both sit strictly after M/S decode. Like the
-// bass-mono crossover and Haas Mode, the allpass cascade is a direct-form IIR
-// structure - zero-latency, sample-synchronous - so it never adds to
-// getLatencySamples().
+// Decorrelate ("Classic" mode, v0.2.0): a gentler alternative widening
+// technique for near-mono material, also applied post-M/S-decode to the
+// Right channel: a cascade of 4 fixed-frequency allpass IIR filters blended
+// with the dry Right signal by decorrelateAmount. Decorrelate and Haas Mode
+// are mutually exclusive: whenever both are enabled, Decorrelate takes
+// effect and the Haas delay line is pinned to 0 samples. Both remain
+// explicit, documented exceptions to the mono-sum invariant.
 //
-// The bass-mono crossover itself is unchanged from v0.1: a single-channel
-// juce::dsp::LinkwitzRileyFilter (JUCE 8.0.14, prepared mono, dual-output
-// processSample). Per JUCE's own class documentation (juce_dsp/processors/
-// juce_LinkwitzRileyFilter.h), "their sum is equivalent to an all-pass
-// filter with a flat magnitude frequency response" - i.e. low+high preserves
-// magnitude but NOT phase/identity (confirmed empirically during
-// development: summing the unscaled bands reproduces the input's RMS level
-// but not its sample values). The v0.1 bass-mono feature only ever
-// *discards* the low band and keeps the high band alone, so this never
-// mattered for it - a highpass filter's output is genuinely close to zero
-// below its cutoff on its own, independent of any sum-identity claim. This
-// filter structure introduces no additional latency regardless (a direct-
-// form IIR, sample-synchronous by construction), so Firmament's total
-// reported latency is still always 0 samples - Haas Mode's delay is a
-// separate, intentional *relative* channel-to-channel offset (the whole
-// point of that effect), not a processing artifact a host needs to
-// compensate for, the same way a chorus/flanger's internal modulated delay
-// is not reported as plugin latency either.
+// ============================ v0.3.0 additions ===========================
+// (binding brief: .scaffold/research/2026-07-25-sota/brief-firmament.md;
+// math sources: research-stereo-imaging.md - see docs/research-notes.md
+// Section 7 for the full citations)
+//
+// 1. Velvet-noise decorrelation modes: "Velvet Dense" (OVN30) and "Velvet
+//    Sparse" (OVN15) use the published DAFx-18 optimal tap pairs in a
+//    *symmetric complementary* topology, post-M/S-decode, projected onto
+//    the mono-safe manifold: the Side component follows the brief's wet mix
+//    exactly - S' = (1-d)*S + d*(VND_A(L) - VND_B(R))/2 - while Mid stays
+//    bit-exactly dry, so every velvet setting is mono-sum invariant BY
+//    CONSTRUCTION (the published pair *sum* A+B has a real ~17 dB
+//    third-octave notch, so the raw per-channel wet mix could not meet the
+//    binding <= 3 dB fold-down spec; see the derivation comment in
+//    FirmamentEngine.cpp and docs/architecture.md). Both channels are
+//    genuinely processed (symmetric widening cost, centre image stays put),
+//    unlike the R-only Classic cascade (which remains available and
+//    default, and remains a documented mono-sum exception). All three
+//    decorrelate paths always process ("always process, conditionally
+//    use"); the output is selected via smoothed 50 ms crossfade weights,
+//    and the master enable is likewise a smoothed 0..1 gain rather than the
+//    v0.2.0 instant per-block gate.
+//
+// 2. Bass-mono mode selector (active only while BassMonoFreq > 0):
+//    - Classic: bit-exact v0.2.0 behaviour (LR4 split on Side, Mid dry).
+//    - Phase Matched: Mid additionally passes the companion 2nd-order
+//      allpass AP2(fc, Q = 1/sqrt(2)) whose phase tracks the LR4 sections
+//      exactly (see PhaseMatchedAllpass.h), making the recombination
+//      seam-free. Crossfaded against Classic over 50 ms.
+//    - Linear Phase: FIR complementary split of Side (Kaiser-sinc lowpass,
+//      S_high = delay - S_low, perfect reconstruction by construction) with
+//      Mid delayed to match - see LinearPhaseCrossover.h. This is the
+//      codebase's first nonzero-latency path: getLatencySamples() becomes
+//      dynamic (N/2 in this mode, 0 otherwise) and mode changes to/from
+//      Linear Phase are handled with a short mute-crossfade (documented -
+//      hosts renegotiate PDC).
+//
+// 3. 3-band width: a second Side-path LR4 at HighSplitFreq (sentinel 0 =
+//    off, mirroring BassMonoFreq) splits the content above the bass-mono
+//    crossover into mid (Width) and high (High Width) bands. Flat-sum
+//    discipline: the low band passes AP2(HighSplitFreq) before the band sum
+//    so all bands carry identical phase at the second crossover (standard
+//    3-way Linkwitz-Riley practice); in Phase Matched mode Mid gets
+//    AP2(BassMonoFreq) * AP2(HighSplitFreq). The internal clamp
+//    HighSplitFreq >= 2 * BassMonoFreq keeps the crossovers ordered.
+//
+// 4. Safety Response modes: "Smooth" is the bit-exact v0.2.0 static map on
+//    the 300 ms estimate. "Dynamic" drives the same static map from a
+//    second, fast (30 ms) correlation estimator and passes the resulting
+//    gain through a dedicated asymmetric one-pole with compressor-style
+//    ballistics. Ballistics convention (binding): attack 5 ms / release
+//    250 ms are times to 90% settling toward the target, so the internal
+//    time constants are tau = t90 / ln(10) (~2.17 ms / ~108.6 ms). The gain
+//    smoother is a dedicated one-pole, NOT juce::SmoothedValue. Energy-gate
+//    rule (binding for every correlation estimator in the plugin, guard
+//    detectors and display meters alike): below an energy gate the
+//    estimate decays toward 0 instead of holding its last ratio - a leaky
+//    Pearson ratio is invariant under silence (numerator and denominator
+//    decay at the same rate), so without the gate the guard would hold
+//    rho = -1 after an anti-phase burst into silence and never release.
+//
+// 5. Equal-power width compensation (opt-in): with a = (1+w)/2,
+//    b = (1-w)/2, post-decode makeup g = 1/sqrt(a^2+b^2) (exactly 1 at
+//    w = 1), computed from the broadband width parameter only (documented
+//    multiband limitation), smoothed 50 ms. Off by default (mastering
+//    convention: width changes side level only).
+//
+// 6. Mono audition: post-everything (after the output trim),
+//    L = R = (L+R)/2, crossfaded 50 ms. The one stage that is deliberately
+//    NOT part of the mono-sum invariant tests - it *is* the fold-down.
+//
+// 7. Haas/toggle polish: Lagrange 3rd-order delay interpolation, per-sample
+//    smoothed delay-time application (kills the automation pitch-zipper),
+//    and crossfaded (not instant) enable gates for both Haas Mode and
+//    Decorrelate, mirroring the safety toggle discipline.
+//
+// 8. Meter surface: per-band *input* correlation (low / above-bass-mono /
+//    mid / high) and a broadband *output* (post-processing) correlation,
+//    all exposed as block-rate getters for the processor's atomics.
 class FirmamentEngine
 {
 public:
+    enum class DecorrelateMode
+    {
+        classic = 0,
+        velvetDense = 1,
+        velvetSparse = 2
+    };
+
+    enum class BassMonoMode
+    {
+        classic = 0,
+        phaseMatched = 1,
+        linearPhase = 2
+    };
+
+    enum class SafetyMode
+    {
+        smooth = 0,
+        dynamic = 1
+    };
+
     FirmamentEngine();
 
-    // Allocates all DSP state. Must be called (and completed) before the
-    // first process() call, and again whenever sample rate/block size/
-    // channel count change. `spec.numChannels` is expected to be 2 (stereo);
-    // process() is a safe no-op for any other channel count.
+    // Allocates all DSP state. Message thread only; must be called (and
+    // completed) before the first process() call, and again whenever sample
+    // rate/block size/channel count change. `spec.numChannels` is expected
+    // to be 2 (stereo); process() is a safe no-op for any other channel
+    // count.
     void prepare (const juce::dsp::ProcessSpec& spec);
 
     // Clears all filter/gain/delay-line state without deallocating. Safe to
@@ -143,9 +180,10 @@ public:
     void reset();
 
     // Processes `block` in place. `block` must be a 2-channel (stereo)
-    // block, channel 0 = left, channel 1 = right, with at most the maximum
-    // sample count declared to prepare(); a zero-sample or non-stereo block
-    // is a safe no-op. No allocation occurs here.
+    // block, channel 0 = left, channel 1 = right; a zero-sample or
+    // non-stereo block is a safe no-op. Blocks larger than the maximum
+    // declared to prepare() are processed in chunks of at most that size
+    // (oversized-block guard). No allocation occurs here.
     void process (juce::dsp::AudioBlock<float>& block) noexcept;
 
     // Parameter setters, in real units. Safe to call every block from the
@@ -158,177 +196,229 @@ public:
     void setHaasTimeMs (float newHaasTimeMs);
     void setOutputDb (float newOutputDb);
 
-    // v0.2.0 additions - see the class-level comment above and
-    // docs/design-brief.md for the full rationale of each.
+    // v0.2.0 additions.
     void setAutoMonoSafetyFloorDb (float newFloorDb);
     void setAutoMonoSafetyMultibandEnabled (bool shouldBeEnabled);
     void setDecorrelateEnabled (bool shouldBeEnabled);
     void setDecorrelateAmountPercent (float newAmountPercent);
 
+    // v0.3.0 additions - see the class-level comment above.
+    void setDecorrelateMode (int newMode);
+    void setBassMonoMode (int newMode);
+    void setHighSplitFrequencyHz (float newFrequencyHz);
+    void setHighWidthPercent (float newHighWidthPercent);
+    void setSafetyMode (int newMode);
+    void setWidthCompensationEnabled (bool shouldBeEnabled);
+    void setMonoAuditionEnabled (bool shouldBeEnabled);
+
     // The most recent block's running correlation estimate of the plugin's
-    // *input* L/R signal, in [-1, 1] (1 = perfectly in-phase/mono-compatible,
-    // 0 = uncorrelated, -1 = perfectly out-of-phase). Updated once per
-    // process() call (not per-sample), safe to read from any thread - this
-    // is what drives Auto Mono Safety internally and is exposed so a future
-    // GUI (M3) can display it as a correlation/phase meter without any
-    // further DSP work.
+    // *input* L/R signal, in [-1, 1]. Updated once per process() call, safe
+    // to read from any thread. Subject to the v0.3.0 energy-gate rule: the
+    // estimate decays toward 0 under (near-)silence instead of holding its
+    // last ratio (never show +/-1 on silence).
     float getCorrelationValue() const noexcept { return lastCorrelation; }
 
-    // Firmament's own processing chain (Width/multiband/Auto Mono
-    // Safety/bass-mono crossover/output trim) never adds latency; Haas
-    // Mode's delay is an intentional relative Left/Right offset (the effect
-    // itself), not a processing artifact, so it is likewise never reported -
-    // see the class-level comment above. getLatencySamples() is therefore
-    // always exactly 0, reported via a static constexpr.
-    static constexpr int getLatencySamples() noexcept { return 0; }
+    // v0.3.0 meter surface: per-band input correlation (bands defined by
+    // the bass-mono and high-split crossovers - always computed, regardless
+    // of which stages are engaged) and the broadband *output*
+    // (post-processing) correlation. Same update cadence/gating as
+    // getCorrelationValue().
+    float getCorrelationLowValue() const noexcept { return lastCorrelationLow; } // below BassMonoFreq
+    float getCorrelationHighValue() const noexcept { return lastCorrelationHigh; } // above BassMonoFreq (v0.2.0 "high")
+    float getCorrelationMidBandValue() const noexcept { return lastCorrelationMidBand; } // BassMonoFreq..HighSplitFreq
+    float getCorrelationHighBandValue() const noexcept { return lastCorrelationHighBand; } // above HighSplitFreq
+    float getOutputCorrelationValue() const noexcept { return lastOutputCorrelation; }
+
+    // v0.3.0: dynamic. 0 in Classic/Phase Matched bass-mono modes (every
+    // minimum-phase stage is sample-synchronous IIR; Haas Mode's delay is an
+    // intentional relative channel offset, never reported); N/2 samples
+    // while Linear Phase bass-mono is commanded (mode == linearPhase AND
+    // BassMonoFreq > 0). The processor forwards changes via
+    // setLatencySamples on the message thread.
+    int getLatencySamples() const noexcept;
+
+    // Message-thread service hook: forwards to
+    // LinearPhaseCrossover::serviceMessageThreadUpdates() (coalesced FIR
+    // kernel recompute + Convolution::loadImpulseResponse handoff). Called
+    // by the processor's timer; tests may call it directly (with
+    // force = true) for determinism.
+    void serviceLinearPhaseUpdates (bool force = false) { linearPhase.serviceMessageThreadUpdates (force); }
+
+    // Deterministic ready signal for the Linear Phase kernel handoff - see
+    // LinearPhaseCrossover::kernelEpoch().
+    juce::uint64 getLinearPhaseKernelEpoch() const noexcept { return linearPhase.kernelEpoch(); }
+
+    // TEST-ONLY negative control for the Phase Matched phase-identity test
+    // (brief 6.2): forces the Mid companion allpass to unity (weight 0) even
+    // while Phase Matched mode is selected, which must make the phase-match
+    // assertion fail. Never called from production code.
+    void setPhaseMatchBypassedForTests (bool shouldBypass);
 
 private:
+    void processChunk (juce::dsp::AudioBlock<float>& block) noexcept;
+    void refreshCrossfadeTargets();
+    float computeWidthCompensationTarget() const noexcept;
+
     static constexpr double smoothingTimeSeconds = 0.05;
 
-    // Correlation meter ballistics: a one-pole leaky-integrator time constant
-    // for Auto Mono Safety/the correlation meter. v0.2.0 (docs/design-brief.md)
-    // moves this from 200ms to 300ms - a reasoned compromise toward, but not
-    // all the way to, the ~600ms documented for a pure *display* correlation
-    // meter (Auto Mono Safety is a live control-loop input as well as a
-    // future meter feed, so staying meaningfully faster than a passive
-    // display is deliberate).
+    // Correlation meter ballistics: one-pole leaky-integrator time constants.
+    // 300 ms (v0.2.0) drives the display meters and the "Smooth" safety
+    // path; 30 ms (v0.3.0) is the fast detector feeding the "Dynamic"
+    // safety path (research-stereo-imaging.md section 2.5).
     static constexpr double correlationTimeConstantSeconds = 0.3;
+    static constexpr double fastCorrelationTimeConstantSeconds = 0.03;
 
-    // Auto Mono Safety dead-zone (v0.2.0): correlation in [-0.10, 1.0] yields
-    // full (1.0) safety gain; the ramp toward the floor runs from -0.10 down
-    // to -1.0, not from 0.0 - "the occasional small deviation into the
-    // negative side is usually insignificant" (documented correlation-meter
-    // practice, see docs/research-notes.md Section 5). -0.10 itself is a
-    // reasoned magnitude (no source gives an exact number). Not user-exposed
-    // - like the ballistics time constant below, this is an internal
-    // constant defined alongside computeAutoMonoSafetyGain() in
-    // FirmamentEngine.cpp, not declared here.
-    //
+    // v0.3.0 Dynamic safety ballistics (binding convention, brief 3.4): the
+    // published attack/release times are times to 90% settling toward the
+    // target, so the internal one-pole time constants are t90 / ln(10).
+    static constexpr double safetyAttackSeconds = 0.005 / 2.302585092994046; // ~2.17 ms
+    static constexpr double safetyReleaseSeconds = 0.25 / 2.302585092994046; // ~108.6 ms
+
+    // v0.3.0 Linear Phase transition mute-crossfade (brief 4: "short
+    // mute-crossfade acceptable" on any change to/from Linear Phase - the
+    // latency change makes a click-free transition impossible anyway).
+    static constexpr double linearPhaseFadeSeconds = 0.005;
+
     // Maximum Haas Mode delay the DelayLine is sized for; matches the
-    // haasTimeMs parameter's documented maximum (see ParameterLayout.cpp)
-    // with a small margin.
+    // haasTimeMs parameter's documented maximum with a small margin.
     static constexpr float maxHaasTimeMs = 41.0f;
 
-    // Number of cascaded allpass stages in the Decorrelate network, and the
-    // fixed frequencies (Hz) each stage's allpass coefficients are centred
-    // on - spread across the spectrum so the resulting phase shift is
-    // irregular rather than a single time offset (docs/research-notes.md
-    // Section 4: "phase shifts spread irregularly across the spectrum"),
-    // which is what keeps mono-fold-down cost to mild ripple rather than
-    // deep comb-filter notches. The exact stage count/frequency spacing is
-    // implementation-reasoned (docs/design-brief.md) - no source publishes
-    // an exact allpass topology for this category of effect.
+    // Classic Decorrelate mode's cascaded allpass network (v0.2.0,
+    // unchanged): stage count/frequencies are implementation-reasoned.
     static constexpr int numDecorrelateStages = 4;
     static constexpr std::array<float, numDecorrelateStages> decorrelateStageFrequenciesHz { 300.0f, 900.0f, 2700.0f, 8100.0f };
     static constexpr float decorrelateStageQ = 0.7f;
 
     double sampleRate = 44100.0;
+    int preparedMaxBlockSize = 0;
 
-    // Operates on a single channel (the one derived Side stream), not the
-    // stereo bus - prepared with numChannels == 1 regardless of the block's
-    // own channel count. Also used for the low/high multiband split (see
-    // class-level comment).
+    // ---- crossovers / filters -------------------------------------------
+    // The bass-mono crossover operates on the single derived Side stream
+    // (prepared mono); also used for the low/high multiband width split.
     juce::dsp::LinkwitzRileyFilter<float> bassMonoCrossover;
+
+    // v0.3.0: second Side-path crossover at HighSplitFreq (3-band width).
+    juce::dsp::LinkwitzRileyFilter<float> sideHighSplitCrossover;
+
     juce::dsp::Gain<float> outputGain;
 
-    // v0.2.0 multiband Auto Mono Safety: a second pair of mono
-    // LinkwitzRileyFilters, run on the raw (pre-Width) input Left/Right
-    // channels at the same crossover frequency as bassMonoCrossover, so the
-    // per-band correlation estimate below can be computed independently for
-    // the low/high bands. Always processed (same "always process,
-    // conditionally use" pattern as bassMonoCrossover - see GitHub issue
-    // #12's fix) regardless of whether Multiband is actually engaged, so
-    // their internal TPT state never goes stale.
+    // Input-side band splits for the per-band correlation detectors: raw
+    // L/R at BassMonoFreq (v0.2.0) and the content above it at
+    // HighSplitFreq (v0.3.0). Always processed ("always process,
+    // conditionally use") so their state never goes stale.
     juce::dsp::LinkwitzRileyFilter<float> leftMultibandCrossover;
     juce::dsp::LinkwitzRileyFilter<float> rightMultibandCrossover;
+    juce::dsp::LinkwitzRileyFilter<float> leftHighSplitInputCrossover;
+    juce::dsp::LinkwitzRileyFilter<float> rightHighSplitInputCrossover;
 
-    // Decorrelate's allpass cascade (Right channel only, mono) - see the
-    // class-level comment above. Always processed regardless of whether
-    // Decorrelate is enabled, so its state never goes stale when re-enabled.
+    // v0.3.0 Phase Matched companions (see PhaseMatchedAllpass.h): Mid at
+    // the bass-mono corner, Mid at the high-split corner, and the low band's
+    // AP2(HighSplitFreq) for the 3-band flat-sum discipline. All always
+    // processed; blended in via the smoothed weights below.
+    PhaseMatchedAllpass midBassAllpass;
+    PhaseMatchedAllpass midHighAllpass;
+    PhaseMatchedAllpass lowBandHighAllpass;
+
+    // v0.3.0 Linear Phase bass-mono tier (see LinearPhaseCrossover.h).
+    LinearPhaseCrossover linearPhase;
+    std::vector<float> lpSideIn, lpMidIn, lpSideLow, lpSideHigh, lpMidDelayed;
+    bool linearPhaseActive = false;
+
+    // Classic Decorrelate allpass cascade (Right channel only, v0.2.0).
     std::array<juce::dsp::IIR::Filter<float>, numDecorrelateStages> decorrelateAllpassStages;
 
-    // Haas Mode delay line - Right channel only, Left is passed through
-    // unchanged. Always pushed/popped (even while Haas Mode is off, with the
-    // delay pinned to 0 samples) so enabling it mid-stream never starts from
-    // stale/discontinuous history. Also pinned to 0 samples while Decorrelate
-    // is engaged (mutual exclusivity - see the class-level comment above).
-    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Linear> haasDelayLine;
+    // v0.3.0 velvet-noise decorrelators: symmetric complementary pairs
+    // (channel A -> Left, channel B -> Right), dense (OVN30) and sparse
+    // (OVN15). Always processed so mode switches start from warm state.
+    VelvetDecorrelator velvetDenseLeft, velvetDenseRight;
+    VelvetDecorrelator velvetSparseLeft, velvetSparseRight;
 
-    // Width is a plain multiplicative scale on the Side channel, cheap
-    // enough to interpolate per-sample directly (no trig/coefficient
-    // recompute involved), so it uses per-sample getNextValue() rather than
-    // the once-per-block skip() pattern used for the crossover frequency
-    // below. Low Width uses the same smoothing scheme.
+    // Haas Mode delay line - Right channel only. v0.3.0: Lagrange 3rd-order
+    // interpolation (fractional-delay HF response; integer-sample delays,
+    // including the pinned 0, are still exact) and per-sample smoothed
+    // setDelay() calls. Always pushed/popped; the effective delay is the
+    // smoothed Haas time multiplied by a smoothed 0/1 "pin" weight that is 0
+    // whenever Haas is off or Decorrelate is engaged (mutual exclusivity).
+    juce::dsp::DelayLine<float, juce::dsp::DelayLineInterpolationTypes::Lagrange3rd> haasDelayLine;
+
+    // ---- smoothed parameters --------------------------------------------
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> widthSmoothed;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> lowWidthSmoothed;
-
-    // Frequency is smoothed multiplicatively (appropriate for a quantity
-    // perceived logarithmically) but only ever driven while bass-mono is
-    // enabled (lastBassMonoHz > 0); recomputing LinkwitzRileyFilter
-    // coefficients involves a tan() call, so - like Overture's Tight/Tone
-    // filters - this is re-derived once per block rather than per sample.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> highWidthSmoothed; // v0.3.0
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> bassMonoFrequencySmoothed;
-
-    // Haas Mode delay time, smoothed and re-applied to the delay line once
-    // per block (same cadence as the crossover frequency above) rather than
-    // per sample - real-time-safe modulation of DelayLine::setDelay() is
-    // cheap, but there is no audible benefit to sample-accurate updates for
-    // a manually-set widening parameter.
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> highSplitFrequencySmoothed; // v0.3.0
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> haasTimeMsSmoothed;
-
-    // Auto Mono Safety's on/off toggle is crossfaded rather than applied as
-    // an instant per-block gate (GitHub issue #13): the correlation-derived
-    // safetyGain below is always computed (the correlation sums are already
-    // running unconditionally), and this ramps between 0 (fully bypassed -
-    // effective Side gain pinned to 1.0) and 1 (fully engaged - effective
-    // Side gain equals safetyGain) over the same smoothingTimeSeconds used
-    // elsewhere, so flipping the toggle while the correlation estimate is
-    // already settled near its worst case (~-9 dB) can no longer step the
-    // Side gain in a single sample.
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> autoMonoSafetyAmountSmoothed;
-
-    // v0.2.0: Auto Mono Safety's floor gain (linear), smoothed the same way
-    // as Width/Low Width - a plain multiplicative endpoint of the dead-zone
-    // ramp below, cheap enough to interpolate per-sample.
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> autoMonoSafetyFloorGainSmoothed;
-
-    // v0.2.0: Decorrelate's dry/wet blend amount (0..1), smoothed like
-    // Width/Low Width. Always advances even while Decorrelate is off (same
-    // pattern as haasTimeMsSmoothed), so re-enabling it starts from an
-    // up-to-date value. decorrelateEnabled itself is an instant per-block
-    // gate, like haasEnabled - not crossfaded like Auto Mono Safety's toggle,
-    // since (unlike Auto Mono Safety's correlation-derived gain) there is no
-    // hidden state that can already be sitting at an extreme the instant the
-    // feature is engaged; the always-running allpass cascade plus this
-    // smoothed amount are enough to avoid a discontinuity on toggle.
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> decorrelateAmountSmoothed;
 
-    // Running leaky-integrator sums driving the correlation estimate (see
-    // getCorrelationValue()); kept in double for precision over long runs.
-    // Computed from the *input* L/R every sample.
-    double correlationSumLR = 0.0;
-    double correlationSumLL = 0.0;
-    double correlationSumRR = 0.0;
+    // v0.3.0 crossfade weights (all 50 ms, all "select at the exact 0/1
+    // endpoints" so settled states are bit-exact - see processChunk()):
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> decorrelateEnableSmoothed; // master enable (fixes the v0.2.0 instant gate)
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> decorrelateClassicWeightSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> decorrelateDenseWeightSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> decorrelateSparseWeightSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> haasEnableSmoothed; // v0.3.0 crossfaded enable
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> haasPinSmoothed; // 0 while off/Decorrelate engaged
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> midBassApWeightSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> midHighApWeightSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> highSplitBlendSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> safetyModeBlendSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> widthCompGainSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> monoAuditionSmoothed;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> linearPhaseFadeSmoothed;
+
+    // ---- correlation estimators -----------------------------------------
+    // Running leaky-integrator sums (double for precision over long runs),
+    // computed from the *input* L/R every sample. 300 ms display/Smooth
+    // set: broadband + per band. 30 ms fast set (v0.3.0): same structure,
+    // feeds the Dynamic safety path.
+    double correlationSumLR = 0.0, correlationSumLL = 0.0, correlationSumRR = 0.0;
+    double correlationSumLRLow = 0.0, correlationSumLLLow = 0.0, correlationSumRRLow = 0.0;
+    double correlationSumLRHigh = 0.0, correlationSumLLHigh = 0.0, correlationSumRRHigh = 0.0;
+    double correlationSumLRMid = 0.0, correlationSumLLMid = 0.0, correlationSumRRMid = 0.0;
+    double correlationSumLRTop = 0.0, correlationSumLLTop = 0.0, correlationSumRRTop = 0.0;
+
+    double fastSumLR = 0.0, fastSumLL = 0.0, fastSumRR = 0.0;
+    double fastSumLRLow = 0.0, fastSumLLLow = 0.0, fastSumRRLow = 0.0;
+    double fastSumLRHigh = 0.0, fastSumLLHigh = 0.0, fastSumRRHigh = 0.0;
+    double fastSumLRMid = 0.0, fastSumLLMid = 0.0, fastSumRRMid = 0.0;
+    double fastSumLRTop = 0.0, fastSumLLTop = 0.0, fastSumRRTop = 0.0;
+
+    // Output (post-processing) broadband correlation, 300 ms (v0.3.0).
+    double outputSumLR = 0.0, outputSumLL = 0.0, outputSumRR = 0.0;
+
     double correlationSmoothingCoeff = 0.0;
+    double fastCorrelationSmoothingCoeff = 0.0;
+
+    // Energy-gated correlation states (v0.3.0 binding rule): under the
+    // energy gate the estimate decays toward 0 instead of holding its last
+    // (silence-invariant) ratio. With signal present each equals the plain
+    // clamped Pearson ratio bit-for-bit.
+    float gatedCorrelation = 0.0f;
+    float gatedCorrelationLow = 0.0f, gatedCorrelationHigh = 0.0f;
+    float gatedCorrelationMid = 0.0f, gatedCorrelationTop = 0.0f;
+    float gatedFastCorrelation = 0.0f;
+    float gatedFastCorrelationLow = 0.0f, gatedFastCorrelationHigh = 0.0f;
+    float gatedFastCorrelationMid = 0.0f, gatedFastCorrelationTop = 0.0f;
+    float gatedOutputCorrelation = 0.0f;
+
+    // Dynamic safety gain smoother states (dedicated asymmetric one-poles,
+    // per band + broadband; NOT SmoothedValue - brief 3.4 binding).
+    float dynamicGainBroadband = 1.0f;
+    float dynamicGainLow = 1.0f, dynamicGainHigh = 1.0f;
+    float dynamicGainMid = 1.0f, dynamicGainTop = 1.0f;
+    double safetyAttackCoeff = 0.0, safetyReleaseCoeff = 0.0;
+
     float lastCorrelation = 0.0f;
+    float lastCorrelationLow = 0.0f, lastCorrelationHigh = 0.0f;
+    float lastCorrelationMidBand = 0.0f, lastCorrelationHighBand = 0.0f;
+    float lastOutputCorrelation = 0.0f;
 
-    // v0.2.0 multiband Auto Mono Safety: identical leaky-integrator sums as
-    // above, computed independently for the low/high bands split out by
-    // leftMultibandCrossover/rightMultibandCrossover. Always running (same
-    // "always process" rationale as the crossovers themselves).
-    double correlationSumLRLow = 0.0;
-    double correlationSumLLLow = 0.0;
-    double correlationSumRRLow = 0.0;
-    double correlationSumLRHigh = 0.0;
-    double correlationSumLLHigh = 0.0;
-    double correlationSumRRHigh = 0.0;
-
-    // Last commanded values, re-applied to the smoothers on every prepare()
-    // so re-preparing (sample-rate change, etc.) never resets a live
-    // parameter back to a default or lets a smoother start from an invalid
-    // value. 0 Hz is the frozen "bass-mono off" sentinel (see ParameterIds.h)
-    // and is deliberately never fed to the smoother/filter, which requires a
-    // strictly positive, sub-Nyquist cutoff.
+    // ---- last commanded parameter values --------------------------------
+    // Re-applied to the smoothers on every prepare() so re-preparing never
+    // resets a live parameter. 0 Hz is the frozen "off" sentinel for both
+    // crossover frequencies and is never fed to a smoother/filter.
     float lastWidthPercent = 100.0f;
     float lastLowWidthPercent = 0.0f;
     float lastBassMonoHz = 0.0f;
@@ -336,11 +426,21 @@ private:
     bool lastHaasEnabled = false;
     float lastHaasTimeMs = 20.0f;
 
-    // v0.2.0 additions - defaults reproduce v0.1.1 behaviour exactly.
     float lastAutoMonoSafetyFloorDb = -9.1f;
     bool lastAutoMonoSafetyMultibandEnabled = false;
     bool lastDecorrelateEnabled = false;
     float lastDecorrelateAmountPercent = 50.0f;
+
+    // v0.3.0 - defaults reproduce v0.2.0 behaviour exactly.
+    int lastDecorrelateMode = static_cast<int> (DecorrelateMode::classic);
+    int lastBassMonoMode = static_cast<int> (BassMonoMode::classic);
+    float lastHighSplitHz = 0.0f;
+    float lastHighWidthPercent = 100.0f;
+    int lastSafetyMode = static_cast<int> (SafetyMode::smooth);
+    bool lastWidthCompensationEnabled = false;
+    bool lastMonoAuditionEnabled = false;
+
+    bool phaseMatchBypassedForTests = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FirmamentEngine)
 };
