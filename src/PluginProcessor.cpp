@@ -50,8 +50,20 @@ namespace
             { BinaryData::widePadFullPrecedence_json, BinaryData::widePadFullPrecedence_jsonSize },
             { BinaryData::extremeWidth_json, BinaryData::extremeWidth_jsonSize },
             { BinaryData::subtleOpenness_json, BinaryData::subtleOpenness_jsonSize },
+            // v0.3.0 additions (additive only - the 10 presets above are
+            // frozen; see the binding brief's State migration section).
+            { BinaryData::velvetWidth_json, BinaryData::velvetWidth_jsonSize },
+            { BinaryData::masteringLinearPhaseBassMono_json, BinaryData::masteringLinearPhaseBassMono_jsonSize },
+            { BinaryData::threeBandImager_json, BinaryData::threeBandImager_jsonSize },
         };
     }
+
+    // v0.3.0 state schema version (see the binding brief's State migration
+    // section): written to the APVTS root on save; absent in v0.1.x/v0.2.0
+    // states, which therefore load as version 1. The neutral-default design
+    // of every new parameter IS the migration - version numbers exist so any
+    // future non-neutral change has a hook.
+    constexpr const char* stateVersionProperty = "stateVersion";
 }
 
 //==============================================================================
@@ -73,6 +85,13 @@ FirmamentAudioProcessor::FirmamentAudioProcessor()
     autoMonoSafetyMultiband = apvts.getRawParameterValue (ParamIDs::autoMonoSafetyMultiband);
     decorrelateEnabled = apvts.getRawParameterValue (ParamIDs::decorrelateEnabled);
     decorrelateAmount = apvts.getRawParameterValue (ParamIDs::decorrelateAmount);
+    decorrelateMode = apvts.getRawParameterValue (ParamIDs::decorrelateMode);
+    bassMonoMode = apvts.getRawParameterValue (ParamIDs::bassMonoMode);
+    highSplitFreq = apvts.getRawParameterValue (ParamIDs::highSplitFreq);
+    highWidth = apvts.getRawParameterValue (ParamIDs::highWidth);
+    safetyMode = apvts.getRawParameterValue (ParamIDs::safetyMode);
+    widthComp = apvts.getRawParameterValue (ParamIDs::widthComp);
+    monoAudition = apvts.getRawParameterValue (ParamIDs::monoAudition);
 
     jassert (widthPercent != nullptr);
     jassert (lowWidthPercent != nullptr);
@@ -85,11 +104,24 @@ FirmamentAudioProcessor::FirmamentAudioProcessor()
     jassert (autoMonoSafetyMultiband != nullptr);
     jassert (decorrelateEnabled != nullptr);
     jassert (decorrelateAmount != nullptr);
+    jassert (decorrelateMode != nullptr);
+    jassert (bassMonoMode != nullptr);
+    jassert (highSplitFreq != nullptr);
+    jassert (highWidth != nullptr);
+    jassert (safetyMode != nullptr);
+    jassert (widthComp != nullptr);
+    jassert (monoAudition != nullptr);
 
     // M2 default resolution: user "Default" preset > factory "Default"
     // preset > the ParameterLayout defaults apvts was just constructed
     // with above (see PresetManager::applyStartupDefault()'s docs).
     presetManager.applyStartupDefault();
+
+    // v0.3.0: 50 ms message-thread servicing cadence for Linear Phase
+    // kernel handoffs and dynamic latency reporting - see the class
+    // comment in PluginProcessor.h for why this is a timer, not an
+    // audio-thread-triggered AsyncUpdater.
+    startTimer (50);
 }
 
 FirmamentAudioProcessor::~FirmamentAudioProcessor() = default;
@@ -172,15 +204,33 @@ void FirmamentAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     engine.setAutoMonoSafetyMultibandEnabled (autoMonoSafetyMultiband->load (std::memory_order_relaxed) > 0.5f);
     engine.setDecorrelateEnabled (decorrelateEnabled->load (std::memory_order_relaxed) > 0.5f);
     engine.setDecorrelateAmountPercent (decorrelateAmount->load (std::memory_order_relaxed));
+    engine.setDecorrelateMode (static_cast<int> (decorrelateMode->load (std::memory_order_relaxed)));
+    engine.setBassMonoMode (static_cast<int> (bassMonoMode->load (std::memory_order_relaxed)));
+    engine.setHighSplitFrequencyHz (highSplitFreq->load (std::memory_order_relaxed));
+    engine.setHighWidthPercent (highWidth->load (std::memory_order_relaxed));
+    engine.setSafetyMode (static_cast<int> (safetyMode->load (std::memory_order_relaxed)));
+    engine.setWidthCompensationEnabled (widthComp->load (std::memory_order_relaxed) > 0.5f);
+    engine.setMonoAuditionEnabled (monoAudition->load (std::memory_order_relaxed) > 0.5f);
 
     engine.prepare (spec);
 
-    // Firmament has no oversampling, convolution, or other latency-inducing
-    // stage - the Linkwitz-Riley bass-mono crossover is a zero-latency TPT
-    // structure - so this is always 0, but it is still reported explicitly
-    // (rather than relying on AudioProcessor's default) so the intent is
-    // documented and this stays correct if a latent stage is ever added.
+    // v0.3.0: latency is now dynamic - 0 for every minimum-phase path, N/2
+    // samples while the Linear Phase bass-mono mode is commanded (the
+    // codebase's first nonzero-latency stage; see LinearPhaseCrossover.h).
+    // prepareToPlay runs on the message thread, so this reports directly;
+    // mid-stream mode changes are picked up by the 50 ms servicing timer
+    // (handleMessageThreadServicing()).
     setLatencySamples (engine.getLatencySamples());
+}
+
+void FirmamentAudioProcessor::handleMessageThreadServicing (bool forceKernelReload)
+{
+    engine.serviceLinearPhaseUpdates (forceKernelReload);
+
+    const auto engineLatency = engine.getLatencySamples();
+
+    if (engineLatency != getLatencySamples())
+        setLatencySamples (engineLatency);
 }
 
 void FirmamentAudioProcessor::releaseResources()
@@ -244,13 +294,26 @@ void FirmamentAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     engine.setAutoMonoSafetyMultibandEnabled (autoMonoSafetyMultiband->load (std::memory_order_relaxed) > 0.5f);
     engine.setDecorrelateEnabled (decorrelateEnabled->load (std::memory_order_relaxed) > 0.5f);
     engine.setDecorrelateAmountPercent (decorrelateAmount->load (std::memory_order_relaxed));
+    engine.setDecorrelateMode (static_cast<int> (decorrelateMode->load (std::memory_order_relaxed)));
+    engine.setBassMonoMode (static_cast<int> (bassMonoMode->load (std::memory_order_relaxed)));
+    engine.setHighSplitFrequencyHz (highSplitFreq->load (std::memory_order_relaxed));
+    engine.setHighWidthPercent (highWidth->load (std::memory_order_relaxed));
+    engine.setSafetyMode (static_cast<int> (safetyMode->load (std::memory_order_relaxed)));
+    engine.setWidthCompensationEnabled (widthComp->load (std::memory_order_relaxed) > 0.5f);
+    engine.setMonoAuditionEnabled (monoAudition->load (std::memory_order_relaxed) > 0.5f);
 
     juce::dsp::AudioBlock<float> block (buffer);
     engine.process (block);
 
-    // Refresh the correlation/phase meter value for any reader (see
-    // getCorrelationMeterValue()) - a plain atomic store, real-time-safe.
+    // Refresh the correlation/phase meter values for any reader (see
+    // getCorrelationMeterValue() and the v0.3.0 per-band/output meters) -
+    // plain atomic stores, real-time-safe.
     correlationMeterValue.store (engine.getCorrelationValue(), std::memory_order_relaxed);
+    correlationMeterLow.store (engine.getCorrelationLowValue(), std::memory_order_relaxed);
+    correlationMeterHigh.store (engine.getCorrelationHighValue(), std::memory_order_relaxed);
+    correlationMeterMidBand.store (engine.getCorrelationMidBandValue(), std::memory_order_relaxed);
+    correlationMeterHighBand.store (engine.getCorrelationHighBandValue(), std::memory_order_relaxed);
+    outputCorrelationMeter.store (engine.getOutputCorrelationValue(), std::memory_order_relaxed);
 }
 
 //==============================================================================
@@ -267,7 +330,12 @@ juce::AudioProcessorEditor* FirmamentAudioProcessor::createEditor()
 //==============================================================================
 void FirmamentAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    const auto state = apvts.copyState();
+    auto state = apvts.copyState();
+
+    // v0.3.0 state schema versioning (see the binding brief's State
+    // migration section): every save is stamped with the current version.
+    state.setProperty (stateVersionProperty, currentStateVersion, nullptr);
+
     const std::unique_ptr<juce::XmlElement> xml (state.createXml());
     copyXmlToBinary (*xml, destData);
 }
@@ -277,7 +345,19 @@ void FirmamentAudioProcessor::setStateInformation (const void* data, int sizeInB
     const std::unique_ptr<juce::XmlElement> xmlState (getXmlFromBinary (data, sizeInBytes));
 
     if (xmlState != nullptr && xmlState->hasTagName (apvts.state.getType()))
-        apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
+    {
+        const auto state = juce::ValueTree::fromXml (*xmlState);
+
+        // Absent attribute => a v0.1.x/v0.2.0 state => version 1. Version 1
+        // states load as-is (APVTS's tolerant load leaves every new v0.3.0
+        // parameter at its neutral ParameterLayout default): the
+        // neutral-default design IS the migration, verified bit-exactly by
+        // tests/StateTests.cpp. The version exists so any future
+        // non-neutral schema change has a transformation hook here.
+        loadedStateVersion = static_cast<int> (state.getProperty (stateVersionProperty, 1));
+
+        apvts.replaceState (state);
+    }
 }
 
 //==============================================================================

@@ -95,4 +95,49 @@ namespace ParamIDs
     // Decorrelate's effective phase-shift depth (0-100%, default 50%), only
     // audible while decorrelateEnabled is on.
     inline constexpr auto decorrelateAmount = "decorrelateAmount";
+
+    // v0.3.0 additions below (binding brief
+    // .scaffold/research/2026-07-25-sota/brief-firmament.md). All seven new
+    // IDs default to values that reproduce v0.2.0 behaviour exactly, so a
+    // v0.1.x/v0.2.0 state loads cleanly with these simply absent (APVTS's
+    // tolerant load leaves an unmentioned parameter at its ParameterLayout
+    // default) - verified bit-exactly by tests/StateTests.cpp's migration
+    // null tests. See docs/manual.md for the user-facing behaviour of each.
+
+    // Decorrelate topology: Classic (v0.2.0 R-only 4-stage allpass cascade,
+    // default) / Velvet Dense (OVN30 symmetric velvet-noise pair) / Velvet
+    // Sparse (OVN15 pair). All paths always process; switching crossfades
+    // over 50 ms.
+    inline constexpr auto decorrelateMode = "decorrelateMode";
+
+    // Bass-mono topology (active only while bassMonoFreq > 0): Classic
+    // (v0.2.0 LR4-on-Side, Mid untouched, default) / Phase Matched (Mid
+    // through the LR4's companion AP2 - seam-free recombination, zero
+    // latency) / Linear Phase (FIR complementary split, N/2 samples of
+    // reported latency).
+    inline constexpr auto bassMonoMode = "bassMonoMode";
+
+    // Second Side-path crossover frequency for 3-band width (0 = off
+    // sentinel, mirroring bassMonoFreq; 500-8000 Hz active range, internally
+    // clamped to >= 2 * bassMonoFreq).
+    inline constexpr auto highSplitFreq = "highSplitFreq";
+
+    // Width scale (0-200%) for the band above highSplitFreq; inert while
+    // highSplitFreq is 0. Default 100% (unity).
+    inline constexpr auto highWidth = "highWidth";
+
+    // Auto Mono Safety response: Smooth (v0.2.0 static map on the 300 ms
+    // estimate, default) / Dynamic (30 ms fast detector + 5 ms/250 ms
+    // compressor-style gain ballistics).
+    inline constexpr auto safetyMode = "safetyMode";
+
+    // Equal-power width compensation (post-decode makeup so perceived level
+    // stays constant across Width settings). Off by default - the mastering
+    // convention "width changes side level only" remains the default.
+    inline constexpr auto widthComp = "widthComp";
+
+    // Mono audition: post-everything L = R = (L+R)/2 monitor switch. Off by
+    // default; excluded from factory presets (a monitor control, not a
+    // sound).
+    inline constexpr auto monoAudition = "monoAudition";
 }

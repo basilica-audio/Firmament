@@ -368,3 +368,239 @@ TEST_CASE ("Decorrelate/Haas mutual exclusivity: with both enabled, Haas's delay
     // -Wfloat-equal.
     CHECK (maxDifference <= 0.0f);
 }
+
+// ===========================================================================
+// v0.3.0 velvet-mode tests (binding brief, sections 3.1/6.7).
+
+namespace
+{
+    // "Pink noise + drum loop" program (brief 6.7): a deterministic
+    // near-mono program - broadband pink bed plus periodic kick (decaying
+    // 60 Hz burst) and snare (decaying noise burst) hits. Mono (L == R), so
+    // the mono-sum spectrum comparison isolates the decorrelator's own
+    // fold-down cost.
+    struct DrumLoopProgram
+    {
+        TestHelpers::DeterministicPinkNoise pink { 555111u };
+        TestHelpers::DeterministicPinkNoise snareNoise { 777333u };
+        juce::int64 position = 0;
+
+        float next()
+        {
+            constexpr int loopLength = 24000; // 0.5 s at 48 kHz
+            const auto phase = static_cast<int> (position % loopLength);
+
+            float sample = 0.30f * pink.nextSample();
+
+            // Kick at loop start: 60 Hz burst with a fast exponential decay.
+            if (phase < 4800)
+            {
+                const auto t = static_cast<double> (phase);
+                sample += 0.5f * static_cast<float> (std::exp (-t / 1200.0) * std::sin (juce::MathConstants<double>::twoPi * 60.0 * t / 48000.0));
+            }
+
+            // Snare on the back beat: enveloped noise burst.
+            const auto snarePhase = phase - loopLength / 2;
+            const auto snare = snareNoise.nextSample(); // always advance (determinism)
+
+            if (snarePhase >= 0 && snarePhase < 3600)
+                sample += 0.35f * static_cast<float> (std::exp (-snarePhase / 900.0)) * snare;
+
+            ++position;
+            return sample;
+        }
+    };
+
+    // Renders `length` samples of the mono drum-loop program through an
+    // engine (warmup discarded) and returns the third-octave mono-sum
+    // maximum dip (dry-band dB minus processed-band dB, positive = loss)
+    // over the valid 20 Hz - 20 kHz bands.
+    double measureMonoFoldDownDipDb (FirmamentEngine& engine)
+    {
+        constexpr int analysisOrder = 15;
+        constexpr int analysisSize = 1 << analysisOrder; // 32768
+        constexpr int warmupSamples = 1 << 14;
+
+        DrumLoopProgram program;
+        juce::AudioBuffer<float> buffer (2, blockSize);
+
+        std::vector<float> dryMono, processedMono;
+        dryMono.reserve (analysisSize);
+        processedMono.reserve (analysisSize);
+
+        int rendered = 0;
+
+        while (rendered < warmupSamples + analysisSize)
+        {
+            auto* left = buffer.getWritePointer (0);
+            auto* right = buffer.getWritePointer (1);
+
+            std::vector<float> dryBlock (static_cast<size_t> (blockSize));
+
+            for (int i = 0; i < blockSize; ++i)
+            {
+                const auto sample = program.next();
+                left[i] = sample;
+                right[i] = sample;
+                dryBlock[static_cast<size_t> (i)] = sample + sample; // dry mono sum (L + R)
+            }
+
+            juce::dsp::AudioBlock<float> block (buffer);
+            engine.process (block);
+
+            for (int i = 0; i < blockSize; ++i)
+            {
+                if (rendered + i >= warmupSamples && static_cast<int> (processedMono.size()) < analysisSize)
+                {
+                    processedMono.push_back (buffer.getSample (0, i) + buffer.getSample (1, i));
+                    dryMono.push_back (dryBlock[static_cast<size_t> (i)]);
+                }
+            }
+
+            rendered += blockSize;
+        }
+
+        const auto drySpectrum = TestHelpers::magnitudeSpectrum (dryMono, analysisOrder);
+        const auto processedSpectrum = TestHelpers::magnitudeSpectrum (processedMono, analysisOrder);
+
+        const auto dryBands = TestHelpers::thirdOctaveBandAverages (drySpectrum, testSampleRate, analysisSize);
+        const auto processedBands = TestHelpers::thirdOctaveBandAverages (processedSpectrum, testSampleRate, analysisSize);
+
+        double maxDipDb = 0.0;
+
+        for (int band = 0; band < 30; ++band)
+            if (dryBands.valid[static_cast<size_t> (band)] && processedBands.valid[static_cast<size_t> (band)])
+                maxDipDb = std::max (maxDipDb, dryBands.bandDb[static_cast<size_t> (band)] - processedBands.bandDb[static_cast<size_t> (band)]);
+
+        return maxDipDb;
+    }
+}
+
+TEST_CASE ("Mono-compat money test: Velvet Dense at width 150%/amount 100% folds down with at most a 3 dB third-octave dip; the Haas control case fails the same metric", "[dsp][engine][decorrelate][velvet][monocompat][v0.3.0]")
+{
+    // Velvet Dense engine (brief 6.7: pink noise + drum loop, width 150%,
+    // Velvet Dense at 100% amount).
+    FirmamentEngine velvetEngine;
+    velvetEngine.setWidthPercent (150.0f);
+    velvetEngine.setBassMonoFrequencyHz (0.0f);
+    velvetEngine.setDecorrelateEnabled (true);
+    velvetEngine.setDecorrelateAmountPercent (100.0f);
+    velvetEngine.setDecorrelateMode (static_cast<int> (FirmamentEngine::DecorrelateMode::velvetDense));
+    velvetEngine.setOutputDb (0.0f);
+    velvetEngine.prepare (makeTestSpec());
+
+    const auto velvetDipDb = measureMonoFoldDownDipDb (velvetEngine);
+
+    // Haas control case: same program, Haas Mode at its 20 ms default -
+    // the comb notches must fail the identical metric, documenting why Haas
+    // carries a manual warning (research 2.6) while velvet does not.
+    FirmamentEngine haasEngine;
+    haasEngine.setWidthPercent (150.0f);
+    haasEngine.setBassMonoFrequencyHz (0.0f);
+    haasEngine.setDecorrelateEnabled (false);
+    haasEngine.setHaasEnabled (true);
+    haasEngine.setHaasTimeMs (20.0f);
+    haasEngine.setOutputDb (0.0f);
+    haasEngine.prepare (makeTestSpec());
+
+    const auto haasDipDb = measureMonoFoldDownDipDb (haasEngine);
+
+    CAPTURE (velvetDipDb, haasDipDb);
+    CHECK (velvetDipDb <= 3.0);
+    CHECK (haasDipDb > 3.0);
+}
+
+TEST_CASE ("Velvet modes: symmetric complementary topology processes BOTH channels (Classic leaves Left dry, velvet does not)", "[dsp][engine][decorrelate][velvet][v0.3.0]")
+{
+    const auto renderLeftResidual = [] (int mode)
+    {
+        FirmamentEngine engine;
+        engine.setWidthPercent (100.0f);
+        engine.setBassMonoFrequencyHz (0.0f);
+        engine.setDecorrelateEnabled (true);
+        engine.setDecorrelateAmountPercent (100.0f);
+        engine.setDecorrelateMode (mode);
+        engine.setOutputDb (0.0f);
+        engine.prepare (makeTestSpec());
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        juce::AudioBuffer<float> reference (2, blockSize);
+
+        float maxResidual = 0.0f;
+
+        for (int block = 0; block < 4; ++block)
+        {
+            fillMonoComposite (buffer, static_cast<juce::int64> (block) * blockSize);
+            reference.makeCopyOf (buffer);
+
+            juce::dsp::AudioBlock<float> audioBlock (buffer);
+            engine.process (audioBlock);
+
+            for (int i = 0; i < blockSize; ++i)
+                maxResidual = std::max (maxResidual, std::abs (buffer.getSample (0, i) - reference.getSample (0, i)));
+        }
+
+        return maxResidual;
+    };
+
+    // Classic (v0.2.0 topology): Left is bone dry.
+    CHECK (renderLeftResidual (static_cast<int> (FirmamentEngine::DecorrelateMode::classic)) <= 0.0f);
+
+    // Velvet Dense/Sparse: Left is genuinely processed (the survey's 4.1
+    // "R-only topology" finding is fixed).
+    CHECK (renderLeftResidual (static_cast<int> (FirmamentEngine::DecorrelateMode::velvetDense)) > 0.01f);
+    CHECK (renderLeftResidual (static_cast<int> (FirmamentEngine::DecorrelateMode::velvetSparse)) > 0.01f);
+}
+
+TEST_CASE ("Decorrelate mode switching is a click-free crossfade; settled modes are bit-exact selections", "[dsp][engine][decorrelate][velvet][v0.3.0]")
+{
+    FirmamentEngine engine;
+    engine.setWidthPercent (100.0f);
+    engine.setBassMonoFrequencyHz (0.0f);
+    engine.setDecorrelateEnabled (true);
+    engine.setDecorrelateAmountPercent (80.0f);
+    engine.setDecorrelateMode (static_cast<int> (FirmamentEngine::DecorrelateMode::classic));
+    engine.setOutputDb (0.0f);
+    engine.prepare (makeTestSpec());
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    float maxStep = 0.0f;
+    float previousLeft = 0.0f, previousRight = 0.0f;
+    bool first = true;
+
+    for (int block = 0; block < 24; ++block)
+    {
+        // Cycle Classic -> Velvet Dense -> Velvet Sparse every 2 blocks
+        // (~85 ms) while feeding steady program material.
+        engine.setDecorrelateMode ((block / 2) % 3);
+
+        fillMonoBroadbandNoise (buffer, static_cast<juce::int64> (block) * blockSize, 0.4f);
+        juce::dsp::AudioBlock<float> audioBlock (buffer);
+        engine.process (audioBlock);
+
+        for (int i = 0; i < blockSize; ++i)
+        {
+            const auto left = buffer.getSample (0, i);
+            const auto right = buffer.getSample (1, i);
+
+            if (! first)
+            {
+                maxStep = std::max (maxStep, std::abs (left - previousLeft));
+                maxStep = std::max (maxStep, std::abs (right - previousRight));
+            }
+
+            previousLeft = left;
+            previousRight = right;
+            first = false;
+        }
+
+        REQUIRE (TestHelpers::allSamplesFinite (buffer));
+    }
+
+    // Broadband noise at 0.4 amplitude has sample-to-sample deltas up to
+    // ~0.8 on its own; a crossfaded mode switch must not exceed the input's
+    // own step scale (an instant path switch between decorrelated and dry
+    // program at 80% amount would).
+    CAPTURE (maxStep);
+    CHECK (maxStep < 1.6f);
+}

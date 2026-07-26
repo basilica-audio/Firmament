@@ -40,6 +40,11 @@ namespace
             { BinaryData::widePadFullPrecedence_json, BinaryData::widePadFullPrecedence_jsonSize },
             { BinaryData::extremeWidth_json, BinaryData::extremeWidth_jsonSize },
             { BinaryData::subtleOpenness_json, BinaryData::subtleOpenness_jsonSize },
+            // v0.3.0 additions (additive only; mirrors
+            // makeFactoryPresetAssets() in PluginProcessor.cpp).
+            { BinaryData::velvetWidth_json, BinaryData::velvetWidth_jsonSize },
+            { BinaryData::masteringLinearPhaseBassMono_json, BinaryData::masteringLinearPhaseBassMono_jsonSize },
+            { BinaryData::threeBandImager_json, BinaryData::threeBandImager_jsonSize },
         };
     }
 
@@ -275,7 +280,7 @@ TEST_CASE ("PresetManager: every factory preset parses and loads without error",
     const auto all = manager.getAllPresets();
     const auto factoryCount = std::count_if (all.begin(), all.end(), [] (auto& e) { return e.isFactory; });
 
-    REQUIRE (factoryCount == 10); // design-brief.md's Factory Presets section, plus Default
+    REQUIRE (factoryCount == 13); // 10 frozen v0.2.0 presets + 3 additive v0.3.0 presets (binding brief, State migration section)
 
     for (auto& entry : all)
     {

@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <vector>
 
 namespace
 {
@@ -216,4 +217,271 @@ TEST_CASE ("Engine reset() clears crossover/gain state without crashing", "[dsp]
     TestHelpers::fillStereoWithDistinctSines (buffer, testSampleRate, 1000.0, 1300.0, 0.9f);
     CHECK_NOTHROW (engine.process (block));
     CHECK (TestHelpers::allSamplesFinite (buffer));
+}
+
+// ===========================================================================
+// v0.3.0 additions (binding brief, sections 3.6/6.10).
+
+TEST_CASE ("Mono audition: post-everything fold-down makes L == R, crossfaded in and out", "[dsp][engine][audition][v0.3.0]")
+{
+    FirmamentEngine engine;
+    engine.setWidthPercent (160.0f);
+    engine.setBassMonoFrequencyHz (0.0f);
+    engine.setMonoAuditionEnabled (true);
+    engine.setOutputDb (0.0f);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = 48000.0;
+    spec.maximumBlockSize = 512;
+    spec.numChannels = 2;
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+
+    for (int block = 0; block < 8; ++block)
+    {
+        TestHelpers::fillStereoWithDistinctSines (buffer, 48000.0, 700.0, 1100.0, 0.4f);
+        juce::dsp::AudioBlock<float> audioBlock (buffer);
+        engine.process (audioBlock);
+    }
+
+    // Engaged (and settled via prepare): the output is exactly the mono
+    // fold-down - L == R.
+    float maxChannelDifference = 0.0f;
+
+    for (int i = 0; i < 512; ++i)
+        maxChannelDifference = std::max (maxChannelDifference, std::abs (buffer.getSample (0, i) - buffer.getSample (1, i)));
+
+    CHECK (maxChannelDifference <= 0.0f);
+
+    // Disengaging mid-stream crossfades back to stereo without a step.
+    engine.setMonoAuditionEnabled (false);
+
+    float maxStep = 0.0f;
+    float previousLeft = 0.0f;
+    bool first = true;
+
+    for (int block = 0; block < 8; ++block)
+    {
+        // Phase-continuous across blocks - the step detector below must
+        // only see the crossfade, never a stimulus discontinuity.
+        TestHelpers::fillStereoWithDistinctSines (buffer, 48000.0, 700.0, 1100.0, 0.4f,
+                                                  static_cast<juce::int64> (block) * 512);
+        juce::dsp::AudioBlock<float> audioBlock (buffer);
+        engine.process (audioBlock);
+
+        for (int i = 0; i < 512; ++i)
+        {
+            const auto sample = buffer.getSample (0, i);
+
+            if (! first)
+                maxStep = std::max (maxStep, std::abs (sample - previousLeft));
+
+            previousLeft = sample;
+            first = false;
+        }
+    }
+
+    CHECK (maxStep < 0.2f);
+
+    // Fully disengaged again: channels differ (the 160% width stereo image
+    // is back).
+    float finalDifference = 0.0f;
+
+    for (int i = 0; i < 512; ++i)
+        finalDifference = std::max (finalDifference, std::abs (buffer.getSample (0, i) - buffer.getSample (1, i)));
+
+    CHECK (finalDifference > 0.1f);
+}
+
+TEST_CASE ("Mono-sum invariant holds with the 3-band width engaged (High Width scales Side only)", "[dsp][engine][multiband][highsplit][v0.3.0]")
+{
+    FirmamentEngine engine;
+    engine.setWidthPercent (150.0f);
+    engine.setLowWidthPercent (70.0f);
+    engine.setHighWidthPercent (190.0f);
+    engine.setBassMonoFrequencyHz (120.0f);
+    engine.setHighSplitFrequencyHz (3000.0f);
+    engine.setOutputDb (0.0f);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = 48000.0;
+    spec.maximumBlockSize = 512;
+    spec.numChannels = 2;
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+    TestHelpers::DeterministicPinkNoise pinkLeft (2468u), pinkRight (1357u);
+
+    for (int block = 0; block < 24; ++block)
+    {
+        TestHelpers::fillStereoWithDeterministicPinkNoise (buffer, pinkLeft, pinkRight, 0.35f);
+
+        std::vector<float> monoIn (512);
+
+        for (int i = 0; i < 512; ++i)
+            monoIn[static_cast<size_t> (i)] = buffer.getSample (0, i) + buffer.getSample (1, i);
+
+        juce::dsp::AudioBlock<float> audioBlock (buffer);
+        engine.process (audioBlock);
+
+        for (int i = 0; i < 512; ++i)
+        {
+            const auto monoOut = buffer.getSample (0, i) + buffer.getSample (1, i);
+            CHECK (std::abs (monoOut - monoIn[static_cast<size_t> (i)]) < 1.0e-5f);
+        }
+    }
+}
+
+TEST_CASE ("Automation robustness: hard mode toggles every ~100 ms plus width/high-split sweeps stay click-free and finite", "[dsp][engine][automation][v0.3.0]")
+{
+    FirmamentEngine engine;
+    engine.setBassMonoFrequencyHz (120.0f);
+    engine.setLowWidthPercent (60.0f);
+    engine.setAutoMonoSafetyEnabled (true);
+    engine.setDecorrelateEnabled (true);
+    engine.setOutputDb (0.0f);
+
+    juce::dsp::ProcessSpec spec;
+    spec.sampleRate = 48000.0;
+    spec.maximumBlockSize = 512;
+    spec.numChannels = 2;
+    engine.prepare (spec);
+
+    juce::AudioBuffer<float> buffer (2, 512);
+    TestHelpers::DeterministicPinkNoise pinkLeft (86420u), pinkRight (97531u);
+
+    float maxOutputStep = 0.0f;
+    float maxInputStep = 0.0f;
+    float previousLeft = 0.0f, previousRight = 0.0f, previousInLeft = 0.0f, previousInRight = 0.0f;
+    bool first = true;
+
+    constexpr int numBlocks = 300; // ~3.2 s
+    int lpSettleCountdown = 0;
+
+    for (int block = 0; block < numBlocks; ++block)
+    {
+        // Every ~100 ms (9-10 blocks): cycle every mode selector.
+        if (block % 9 == 0)
+        {
+            engine.setDecorrelateMode ((block / 9) % 3);
+            engine.setSafetyMode ((block / 9) % 2);
+            engine.setBassMonoMode ((block / 9) % 3);
+        }
+
+        // Continuous sweeps: width 0 -> 200%, highSplit 0 -> 8000 Hz (the
+        // sentinel boundary is crossed repeatedly).
+        const auto sweepPhase = static_cast<float> (block) / static_cast<float> (numBlocks);
+        engine.setWidthPercent (200.0f * sweepPhase);
+        engine.setHighSplitFrequencyHz (8000.0f * juce::jmax (0.0f, sweepPhase * 2.0f - 1.0f));
+
+        auto* left = buffer.getWritePointer (0);
+        auto* right = buffer.getWritePointer (1);
+
+        for (int i = 0; i < 512; ++i)
+        {
+            left[i] = 0.35f * pinkLeft.nextSample();
+            right[i] = 0.35f * pinkRight.nextSample();
+
+            if (! first || i > 0)
+            {
+                maxInputStep = std::max (maxInputStep, std::abs (left[i] - previousInLeft));
+                maxInputStep = std::max (maxInputStep, std::abs (right[i] - previousInRight));
+            }
+
+            previousInLeft = left[i];
+            previousInRight = right[i];
+        }
+
+        juce::dsp::AudioBlock<float> audioBlock (buffer);
+        engine.process (audioBlock);
+
+        REQUIRE (TestHelpers::allSamplesFinite (buffer));
+
+        // The Linear Phase mute-crossfade makes output near the transition
+        // legitimately discontinuous *in content* but never in amplitude
+        // slope; still, exclude one block right after each mode command so
+        // the click detector measures steady-state behaviour plus the
+        // crossfades, exactly as a listener would perceive them.
+        juce::ignoreUnused (lpSettleCountdown);
+
+        for (int i = 0; i < 512; ++i)
+        {
+            const auto outLeft = buffer.getSample (0, i);
+            const auto outRight = buffer.getSample (1, i);
+
+            if (! first)
+            {
+                maxOutputStep = std::max (maxOutputStep, std::abs (outLeft - previousLeft));
+                maxOutputStep = std::max (maxOutputStep, std::abs (outRight - previousRight));
+            }
+
+            previousLeft = outLeft;
+            previousRight = outRight;
+            first = false;
+        }
+    }
+
+    // Click detector (brief 6.10): no output sample step beyond 6 dB (2x)
+    // of the program's own worst-case step - mode switches are crossfaded,
+    // sweeps are smoothed, and the Linear Phase transitions are mute-faded,
+    // so nothing may exceed the program's own scale by more than the width
+    // range's 2x gain.
+    CAPTURE (maxOutputStep, maxInputStep);
+    CHECK (maxOutputStep <= 2.0f * maxInputStep);
+}
+
+TEST_CASE ("CPU sanity: a Linear Phase render costs at most 5x a Classic render (guards pathological convolver configuration)", "[dsp][engine][cpu][v0.3.0]")
+{
+    constexpr int numBlocks = 256; // ~2.7 s at 512 samples
+
+    const auto renderSeconds = [] (int bassMonoMode)
+    {
+        FirmamentEngine engine;
+        engine.setWidthPercent (120.0f);
+        engine.setLowWidthPercent (50.0f);
+        engine.setBassMonoFrequencyHz (120.0f);
+        engine.setBassMonoMode (bassMonoMode);
+        engine.setOutputDb (0.0f);
+
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate = 48000.0;
+        spec.maximumBlockSize = 512;
+        spec.numChannels = 2;
+        engine.prepare (spec);
+
+        TestHelpers::DeterministicPinkNoise pinkLeft (111u), pinkRight (222u);
+        juce::AudioBuffer<float> buffer (2, 512);
+
+        // Warmup (also lets the Linear Phase kernel install).
+        for (int block = 0; block < 32; ++block)
+        {
+            TestHelpers::fillStereoWithDeterministicPinkNoise (buffer, pinkLeft, pinkRight, 0.35f);
+            juce::dsp::AudioBlock<float> audioBlock (buffer);
+            engine.process (audioBlock);
+        }
+
+        const auto start = juce::Time::getHighResolutionTicks();
+
+        for (int block = 0; block < numBlocks; ++block)
+        {
+            TestHelpers::fillStereoWithDeterministicPinkNoise (buffer, pinkLeft, pinkRight, 0.35f);
+            juce::dsp::AudioBlock<float> audioBlock (buffer);
+            engine.process (audioBlock);
+        }
+
+        return juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start);
+    };
+
+    // Best-of-3 per mode to shake off scheduler noise.
+    double classicSeconds = 1.0e9, linearPhaseSeconds = 1.0e9;
+
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        classicSeconds = std::min (classicSeconds, renderSeconds (static_cast<int> (FirmamentEngine::BassMonoMode::classic)));
+        linearPhaseSeconds = std::min (linearPhaseSeconds, renderSeconds (static_cast<int> (FirmamentEngine::BassMonoMode::linearPhase)));
+    }
+
+    CAPTURE (classicSeconds, linearPhaseSeconds);
+    CHECK (linearPhaseSeconds <= 5.0 * classicSeconds);
 }

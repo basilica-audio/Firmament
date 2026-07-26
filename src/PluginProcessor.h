@@ -13,7 +13,24 @@
 // operate on (Mid/Side encoding requires both L and R) - see
 // isBusesLayoutSupported() and processBlock() for how a mono input bus is
 // handled gracefully rather than rejected outright.
-class FirmamentAudioProcessor final : public juce::AudioProcessor
+//
+// v0.3.0 message-thread servicing: the Linear Phase bass-mono mode makes
+// two things message-thread work that previously did not exist in this
+// codebase - (a) the FIR kernel recompute + Convolution::loadImpulseResponse
+// handoff on cutoff changes (coalesced to at most one recompute per 50 ms;
+// see LinearPhaseCrossover.h) and (b) forwarding the engine's now-dynamic
+// latency via setLatencySamples. Both are driven by a lightweight 50 ms
+// juce::Timer (handleMessageThreadServicing()) rather than by
+// AsyncUpdater::triggerAsyncUpdate() from the audio thread: triggerAsyncUpdate
+// posts a message (a heap allocation) when none is pending, which would
+// violate the zero-allocation audio-thread contract asserted by
+// tests/AllocationGuardTests.cpp - and parameter changes can arrive on the
+// audio thread under host automation. The timer achieves the same
+// "message-thread hop, coalesced" semantics allocation-free on the audio
+// side; tests call handleMessageThreadServicing() directly (or pump the
+// message loop, which fires the timer) for determinism.
+class FirmamentAudioProcessor final : public juce::AudioProcessor,
+                                      private juce::Timer
 {
 public:
     FirmamentAudioProcessor();
@@ -71,7 +88,38 @@ public:
     // M3 (GUI & accessibility) scope, not M1.
     float getCorrelationMeterValue() const noexcept { return correlationMeterValue.load (std::memory_order_relaxed); }
 
+    // v0.3.0 meter surface (brief, feature 8): per-band input correlation
+    // (bands defined by the bass-mono and high-split crossovers) and the
+    // broadband *output* (post-processing) correlation, all refreshed once
+    // per processBlock() and safe to read from any thread. Consumed by the
+    // M3 GUI later; asserted by tests/CorrelationMeterTests.cpp now.
+    float getCorrelationMeterLowValue() const noexcept { return correlationMeterLow.load (std::memory_order_relaxed); }
+    float getCorrelationMeterHighValue() const noexcept { return correlationMeterHigh.load (std::memory_order_relaxed); }
+    float getCorrelationMeterMidBandValue() const noexcept { return correlationMeterMidBand.load (std::memory_order_relaxed); }
+    float getCorrelationMeterHighBandValue() const noexcept { return correlationMeterHighBand.load (std::memory_order_relaxed); }
+    float getOutputCorrelationMeterValue() const noexcept { return outputCorrelationMeter.load (std::memory_order_relaxed); }
+
+    // v0.3.0 message-thread service entry point (see the class comment):
+    // forwards Linear Phase kernel recomputes to the engine and reports
+    // latency changes via setLatencySamples. Normally driven by the internal
+    // 50 ms timer; public so tests can invoke the exact same hop
+    // deterministically. Message thread only.
+    void handleMessageThreadServicing (bool forceKernelReload = false);
+
+    // Deterministic Linear Phase kernel ready-signal, for tests (see
+    // LinearPhaseCrossover::kernelEpoch()).
+    juce::uint64 getLinearPhaseKernelEpoch() const noexcept { return engine.getLinearPhaseKernelEpoch(); }
+
+    // The state-schema version found in the most recently loaded state (1
+    // for v0.1.x/v0.2.0 states without a stateVersion attribute, 2 for
+    // v0.3.0+). Fresh instances report the current version.
+    int getLoadedStateVersion() const noexcept { return loadedStateVersion; }
+
+    static constexpr int currentStateVersion = 2;
+
 private:
+    void timerCallback() override { handleMessageThreadServicing(); }
+
     FirmamentEngine engine;
 
     // Raw atomic pointers into the APVTS-managed parameter values, resolved
@@ -91,7 +139,23 @@ private:
     std::atomic<float>* decorrelateEnabled = nullptr;
     std::atomic<float>* decorrelateAmount = nullptr;
 
+    // v0.3.0 additions - see ParameterIds.h.
+    std::atomic<float>* decorrelateMode = nullptr;
+    std::atomic<float>* bassMonoMode = nullptr;
+    std::atomic<float>* highSplitFreq = nullptr;
+    std::atomic<float>* highWidth = nullptr;
+    std::atomic<float>* safetyMode = nullptr;
+    std::atomic<float>* widthComp = nullptr;
+    std::atomic<float>* monoAudition = nullptr;
+
     std::atomic<float> correlationMeterValue { 0.0f };
+    std::atomic<float> correlationMeterLow { 0.0f };
+    std::atomic<float> correlationMeterHigh { 0.0f };
+    std::atomic<float> correlationMeterMidBand { 0.0f };
+    std::atomic<float> correlationMeterHighBand { 0.0f };
+    std::atomic<float> outputCorrelationMeter { 0.0f };
+
+    int loadedStateVersion = currentStateVersion;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FirmamentAudioProcessor)
 };
