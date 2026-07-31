@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-31
+
+Race-fix patch release.
+
+### Fixed
+
+- **Cross-thread races around linear-phase reconfiguration and latency reporting** (PR #25, ThreadSanitizer-confirmed). `LinearPhaseCrossover::prepare()` (host's `prepareToPlay()` thread) raced the 50 ms timer-driven `serviceMessageThreadUpdates()` (JUCE message thread) — the code even carried the false assumption "prepareToPlay runs on the message thread" in a comment. TSan showed 10-11 races per run on the unfixed engine's pending-command hand-off; fixed via a message-thread mutex in `LinearPhaseCrossover`, an atomic flag in `FirmamentEngine`, and serialized `setLatencySamples()` call sites. Clean under TSan post-fix. New regression guard: `tests/CrossThreadReprepareTests.cpp`; the allocation guard gained an elision-safe self-test.
+
 ## [0.3.0] - 2026-07-26
 
 SOTA DSP pass (binding brief `.scaffold/research/2026-07-25-sota/brief-firmament.md`;
