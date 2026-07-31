@@ -13,6 +13,42 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+// Cross-thread hardening follow-up (tests/CrossThreadReprepareTests.cpp):
+// every existing test case in this file only ever asserts
+// AllocationGuard::allocationCount() == 0, which would pass vacuously if the
+// guard's operator new/delete overrides were silently not firing at all (a
+// broken/optimised-away hook, an ODR issue, etc. - the same vacuous-guard
+// trap previously found in sibling basilica-audio/requiem, see
+// tests/EngineTests.cpp's "6.12 The allocation guard itself works"). Ported
+// here below, unchanged in method: the storage MUST come from a direct call
+// to the replaced ::operator new (a plain function call, not a
+// new-expression, so [expr.new]'s elision permission for new-expressions
+// whose storage is never observably used does not apply), and MUST be
+// written through a volatile pointer, so the allocation is observably used
+// and cannot be optimised away even in a Release build.
+TEST_CASE ("AllocationGuard itself detects a real allocation and does not fire on pure computation", "[robustness][realtime][allocation][v0.3.0]")
+{
+    {
+        AllocationGuard::reset();
+
+        auto* deliberate = static_cast<float*> (::operator new (64 * sizeof (float)));
+        *static_cast<volatile float*> (deliberate) = 1.0f;
+        ::operator delete (deliberate);
+
+        CHECK (AllocationGuard::allocationCount() > 0);
+    }
+
+    {
+        AllocationGuard::reset();
+
+        volatile float sum = 0.0f;
+        for (int i = 0; i < 1000; ++i)
+            sum = sum + static_cast<float> (i);
+
+        CHECK (AllocationGuard::allocationCount() == 0);
+    }
+}
+
 namespace
 {
     void setParam (FirmamentAudioProcessor& processor, const char* id, float realValue)

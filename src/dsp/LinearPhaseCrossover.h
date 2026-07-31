@@ -3,6 +3,7 @@
 #include <juce_dsp/juce_dsp.h>
 
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 // Linear-phase complementary bass-mono crossover (v0.3.0 brief, section
@@ -38,6 +39,38 @@
 // its coefficients live in a ReferenceCountedObjectPtr, and reassigning that
 // pointer from the message thread while the audio thread dereferences it is
 // a data race, so it cannot take dynamically recomputed kernels safely.
+//
+// THREADING (binding, cross-thread reconfiguration hardening - ported from
+// the suite's Nave/Crypta bug class fix, sibling basilica-audio/nave PR #28,
+// basilica-audio/crypta PR #72). prepare() and serviceMessageThreadUpdates()
+// are both documented "message thread only", but that describes the
+// REQUIRED caller, not an ENFORCED one: prepare() is reached from
+// FirmamentAudioProcessor::prepareToPlay(), which the host calls on
+// whatever thread the host chooses - the VST3/AU contract guarantees only
+// that it is not the audio thread, NOT that it is JUCE's own MessageManager
+// thread. serviceMessageThreadUpdates() is reached from a real juce::Timer
+// callback, which always runs on the actual message thread. Those can be
+// two different OS threads, so a host whose prepareToPlay()-calling thread
+// differs from JUCE's message thread (true of pluginval, which drives its
+// test sequence from its own thread while the JUCE message thread runs
+// independently) can end up with both methods running concurrently -
+// confirmed by direct reproduction under ThreadSanitizer (see
+// tests/CrossThreadReprepareTests.cpp): both reach requestKernelLoad() ->
+// juce::dsp::Convolution::loadImpulseResponse(), whose background hand-off
+// is documented safe only "from a single thread at a time", and unsynchronised
+// concurrent callers can corrupt its internal command slots (the same
+// mechanism as Nave's std::bad_function_call crash, #27/#28).
+//
+// messageThreadMutex (a std::recursive_mutex - recursive because prepare()
+// calls serviceMessageThreadUpdates() internally) serialises prepare(),
+// serviceMessageThreadUpdates(), and getLatencySamples() - the third because
+// it reads plain (non-atomic) state written by prepare() and is itself only
+// ever called from message-thread contexts (FirmamentAudioProcessor::
+// prepareToPlay()/handleMessageThreadServicing()), never from the audio
+// thread. This removes the race structurally rather than narrowing its
+// timing window. The mutex is NEVER taken by processBlock(), reset(), or
+// setTargetCutoffFrequency() - those stay lock-free and allocation-free, as
+// asserted by tests/AllocationGuardTests.cpp.
 //
 // Determinism for tests: kernelEpoch() is a monotonic counter that
 // increments once a newly requested kernel load is active in the process
@@ -87,8 +120,10 @@ public:
 
     // N/2 for the prepared sample rate (plus the convolution engine's own
     // latency, which is 0 for the uniform-partitioned default). Constant
-    // between prepare() calls.
-    int getLatencySamples() const noexcept { return latencySamples; }
+    // between prepare() calls. Message thread only (see the class-level
+    // THREADING comment) - takes messageThreadMutex, since it reads state
+    // written by prepare() and is never called from the audio thread.
+    int getLatencySamples() const noexcept;
 
     // See class comment. Starts at 0 after prepare(); reaches 1 once the
     // initial kernel is verifiably active, and increments again for every
@@ -101,6 +136,16 @@ public:
 private:
     void requestKernelLoad (float cutoffHz);
     std::vector<float> designKernel (float cutoffHz) const;
+
+    // See the class-level THREADING comment: serialises prepare(),
+    // serviceMessageThreadUpdates(), and getLatencySamples() - the three
+    // methods that are only ever called from message-thread contexts but
+    // are not guaranteed to be called from the SAME message-thread-context
+    // thread. Recursive because prepare() calls serviceMessageThreadUpdates()
+    // internally. Never taken by processBlock()/reset()/
+    // setTargetCutoffFrequency() - those remain lock-free and
+    // allocation-free.
+    mutable std::recursive_mutex messageThreadMutex;
 
     juce::dsp::Convolution convolution;
 

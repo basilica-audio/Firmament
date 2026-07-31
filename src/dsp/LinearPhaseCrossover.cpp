@@ -31,6 +31,14 @@ namespace
 
 void LinearPhaseCrossover::prepare (const juce::dsp::ProcessSpec& monoSpec, float initialCutoffHz)
 {
+    // See the class-level THREADING comment: prepare() is reached from
+    // FirmamentAudioProcessor::prepareToPlay(), which the host may call from
+    // any non-audio thread - not necessarily JUCE's message thread - while
+    // serviceMessageThreadUpdates() below can concurrently fire from the
+    // real message thread (the 50 ms juce::Timer). This lock makes the two
+    // mutually exclusive regardless of which OS threads they land on.
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     jassert (monoSpec.numChannels == 1);
 
     sampleRate = monoSpec.sampleRate;
@@ -77,6 +85,18 @@ void LinearPhaseCrossover::prepare (const juce::dsp::ProcessSpec& monoSpec, floa
     serviceMessageThreadUpdates (true);
 }
 
+int LinearPhaseCrossover::getLatencySamples() const noexcept
+{
+    // Same mutex as prepare()/serviceMessageThreadUpdates() - see the
+    // class-level THREADING comment. This reads latencySamples, a plain
+    // (non-atomic) member written by prepare(); getLatencySamples() is only
+    // ever called from message-thread contexts (FirmamentAudioProcessor::
+    // prepareToPlay()/handleMessageThreadServicing()), never from the audio
+    // thread, so taking the lock here adds no audio-thread cost.
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+    return latencySamples;
+}
+
 void LinearPhaseCrossover::reset() noexcept
 {
     std::fill (sideDelayBuffer.begin(), sideDelayBuffer.end(), 0.0f);
@@ -100,6 +120,10 @@ void LinearPhaseCrossover::setTargetCutoffFrequency (float frequencyHz) noexcept
 
 void LinearPhaseCrossover::serviceMessageThreadUpdates (bool force)
 {
+    // See the class-level THREADING comment / prepare()'s lock comment
+    // above - same mutex, same reason.
+    const std::lock_guard<std::recursive_mutex> lock (messageThreadMutex);
+
     if (! kernelDirty.load (std::memory_order_acquire))
         return;
 
