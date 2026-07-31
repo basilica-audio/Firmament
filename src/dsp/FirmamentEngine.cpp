@@ -367,6 +367,10 @@ void FirmamentEngine::setBassMonoFrequencyHz (float newFrequencyHz)
         bassMonoFrequencySmoothed.setTargetValue (juce::jmax (5.0f, newFrequencyHz));
 
     refreshCrossfadeTargets();
+
+    // See getLatencySamples()/linearPhaseCommanded's comments.
+    linearPhaseCommanded.store (lastBassMonoMode == static_cast<int> (BassMonoMode::linearPhase) && lastBassMonoHz > 0.0f,
+                                std::memory_order_relaxed);
 }
 
 void FirmamentEngine::setAutoMonoSafetyEnabled (bool shouldBeEnabled)
@@ -425,6 +429,10 @@ void FirmamentEngine::setBassMonoMode (int newMode)
 {
     lastBassMonoMode = juce::jlimit (0, 2, newMode);
     refreshCrossfadeTargets();
+
+    // See getLatencySamples()/linearPhaseCommanded's comments.
+    linearPhaseCommanded.store (lastBassMonoMode == static_cast<int> (BassMonoMode::linearPhase) && lastBassMonoHz > 0.0f,
+                                std::memory_order_relaxed);
 }
 
 void FirmamentEngine::setHighSplitFrequencyHz (float newFrequencyHz)
@@ -470,9 +478,10 @@ void FirmamentEngine::setPhaseMatchBypassedForTests (bool shouldBypass)
 
 int FirmamentEngine::getLatencySamples() const noexcept
 {
-    const bool linearPhaseCommanded = lastBassMonoMode == static_cast<int> (BassMonoMode::linearPhase)
-                                      && lastBassMonoHz > 0.0f;
-    return linearPhaseCommanded ? linearPhase.getLatencySamples() : 0;
+    // Reads the atomic snapshot rather than lastBassMonoMode/lastBassMonoHz
+    // directly - see this method's declaration comment and
+    // linearPhaseCommanded's comment in the header.
+    return linearPhaseCommanded.load (std::memory_order_relaxed) ? linearPhase.getLatencySamples() : 0;
 }
 
 // ---------------------------------------------------------------------------

@@ -217,10 +217,30 @@ void FirmamentAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBl
     // v0.3.0: latency is now dynamic - 0 for every minimum-phase path, N/2
     // samples while the Linear Phase bass-mono mode is commanded (the
     // codebase's first nonzero-latency stage; see LinearPhaseCrossover.h).
-    // prepareToPlay runs on the message thread, so this reports directly;
-    // mid-stream mode changes are picked up by the 50 ms servicing timer
-    // (handleMessageThreadServicing()).
-    setLatencySamples (engine.getLatencySamples());
+    // prepareToPlay() is called by the host on whatever thread the host
+    // chooses - the VST3/AU contract guarantees only that it is not the
+    // audio thread, NOT that it is JUCE's own MessageManager thread (this
+    // comment previously claimed otherwise; see
+    // LinearPhaseCrossover.h's THREADING comment and
+    // tests/CrossThreadReprepareTests.cpp for why that assumption was false
+    // and what protects against it). This still reports directly because
+    // engine.prepare() above has already synchronously produced the correct
+    // latency for whichever thread called prepareToPlay(); mid-stream mode
+    // changes made after prepareToPlay() are picked up by the 50 ms
+    // servicing timer (handleMessageThreadServicing()).
+    //
+    // latencyReportMutex additionally serialises this call against
+    // handleMessageThreadServicing()'s own setLatencySamples() call below:
+    // juce::AudioProcessor::setLatencySamples() reads-then-writes its own
+    // plain (non-atomic) latencySamples member, so two threads calling it
+    // concurrently - this one and the real message thread's 50 ms timer -
+    // race on JUCE's own base-class state even once LinearPhaseCrossover's
+    // and FirmamentEngine's state are both correctly synchronised (caught
+    // directly by ThreadSanitizer; see tests/CrossThreadReprepareTests.cpp).
+    {
+        const std::lock_guard<std::mutex> lock (latencyReportMutex);
+        setLatencySamples (engine.getLatencySamples());
+    }
 }
 
 void FirmamentAudioProcessor::handleMessageThreadServicing (bool forceKernelReload)
@@ -228,6 +248,10 @@ void FirmamentAudioProcessor::handleMessageThreadServicing (bool forceKernelRelo
     engine.serviceLinearPhaseUpdates (forceKernelReload);
 
     const auto engineLatency = engine.getLatencySamples();
+
+    // See prepareToPlay()'s latencyReportMutex comment - same mutex, same
+    // reason.
+    const std::lock_guard<std::mutex> lock (latencyReportMutex);
 
     if (engineLatency != getLatencySamples())
         setLatencySamples (engineLatency);

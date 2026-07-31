@@ -6,6 +6,8 @@
 #include "dsp/FirmamentEngine.h"
 #include "presets/PresetManager.h"
 
+#include <mutex>
+
 // Firmament: a stereo widener/imager built around Mid/Side encode/decode.
 // Signal flow lives in FirmamentEngine (src/dsp) so it stays unit-testable
 // independent of this AudioProcessor; this class is just APVTS + host
@@ -29,6 +31,24 @@
 // "message-thread hop, coalesced" semantics allocation-free on the audio
 // side; tests call handleMessageThreadServicing() directly (or pump the
 // message loop, which fires the timer) for determinism.
+//
+// CROSS-THREAD HARDENING (binding, ported from the suite's Nave/Crypta bug
+// class fix - basilica-audio/nave PR #28, basilica-audio/crypta PR #72; see
+// tests/CrossThreadReprepareTests.cpp for the full audit and red-verification
+// evidence). handleMessageThreadServicing() is driven by the real juce::Timer
+// above and therefore always runs on JUCE's actual message thread, but
+// prepareToPlay() does NOT have that guarantee - the VST3/AU contract only
+// promises it is not the audio thread, not that it is the message thread.
+// A host whose prepareToPlay()-calling thread differs from JUCE's message
+// thread (true of pluginval) can therefore call prepareToPlay() concurrently
+// with a timer-driven handleMessageThreadServicing(). Two things are
+// synchronised against that: LinearPhaseCrossover's own internal mutex
+// (guards its FIR kernel recompute + Convolution::loadImpulseResponse
+// handoff and its getLatencySamples() accessor - see LinearPhaseCrossover.h)
+// and this class's latencyReportMutex (guards the two setLatencySamples()
+// calls below, since juce::AudioProcessor::setLatencySamples() itself reads-
+// then-writes a plain, non-atomic base-class member with no thread-safety
+// guarantee of its own).
 class FirmamentAudioProcessor final : public juce::AudioProcessor,
                                       private juce::Timer
 {
@@ -121,6 +141,11 @@ private:
     void timerCallback() override { handleMessageThreadServicing(); }
 
     FirmamentEngine engine;
+
+    // Serialises setLatencySamples() calls from prepareToPlay() and
+    // handleMessageThreadServicing() against each other - see both methods'
+    // comments in PluginProcessor.cpp. Never taken by processBlock().
+    std::mutex latencyReportMutex;
 
     // Raw atomic pointers into the APVTS-managed parameter values, resolved
     // once at construction time so processBlock() never has to search for

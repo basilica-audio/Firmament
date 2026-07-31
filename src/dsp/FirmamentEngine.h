@@ -8,6 +8,7 @@
 #include "VelvetDecorrelator.h"
 
 #include <array>
+#include <atomic>
 #include <vector>
 
 // The complete Firmament signal path, independent of juce::AudioProcessor so
@@ -234,7 +235,16 @@ public:
     // intentional relative channel offset, never reported); N/2 samples
     // while Linear Phase bass-mono is commanded (mode == linearPhase AND
     // BassMonoFreq > 0). The processor forwards changes via
-    // setLatencySamples on the message thread.
+    // setLatencySamples on the message thread - meaning THIS getter is also
+    // only ever called from message-thread contexts (prepareToPlay()/
+    // handleMessageThreadServicing()), never from the audio thread, while
+    // setBassMonoMode()/setBassMonoFrequencyHz() are audio-thread-legal
+    // setters. Cross-thread hardening (tests/CrossThreadReprepareTests.cpp,
+    // caught directly by ThreadSanitizer): rather than read lastBassMonoMode/
+    // lastBassMonoHz here - plain, audio-thread-owned state with no
+    // synchronisation against a concurrent message-thread reader - this
+    // reads linearPhaseCommanded, an atomic snapshot the two setters publish
+    // on every audio-thread call (see their definitions).
     int getLatencySamples() const noexcept;
 
     // Message-thread service hook: forwards to
@@ -434,6 +444,14 @@ private:
     // v0.3.0 - defaults reproduce v0.2.0 behaviour exactly.
     int lastDecorrelateMode = static_cast<int> (DecorrelateMode::classic);
     int lastBassMonoMode = static_cast<int> (BassMonoMode::classic);
+
+    // Atomic snapshot of "lastBassMonoMode == linearPhase && lastBassMonoHz
+    // > 0", published by setBassMonoMode()/setBassMonoFrequencyHz() (audio
+    // thread) and consumed only by getLatencySamples() (message thread) -
+    // see that getter's comment. A plain relaxed store/load: this is a
+    // single independent flag, not a synchronisation point for other
+    // memory, so acquire/release ordering buys nothing here.
+    std::atomic<bool> linearPhaseCommanded { false };
     float lastHighSplitHz = 0.0f;
     float lastHighWidthPercent = 100.0f;
     int lastSafetyMode = static_cast<int> (SafetyMode::smooth);
