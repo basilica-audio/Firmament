@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **M3 custom vector editor** (issue #4, ported from Miserere's merged M3
+  implementation, basilica-audio/miserere PR #31): the interim slider/dropdown
+  editor is replaced by the suite's fully vector-drawn black/gold surface —
+  pointer knobs with engraved scale rings (choice parameters as detented knobs
+  announcing the choice *name*), lamp toggles, EB Garamond typography embedded
+  via BinaryData (OFL licensed), and five signal-flow section panels (Width /
+  Bands / Mono Safety / Widen / Output). No photoreal PNG assets; everything is
+  drawn at runtime with `juce::Graphics`/`juce::Path`.
+- **Correlation needle meters, finally wired to the GUI**: two vector needle
+  meters (input and output) driven by the engine's per-block correlation
+  metering via relaxed atomics and a 30 Hz GUI timer with one-pole ballistics —
+  the DSP-side meter surface has existed since v0.1/v0.3.0, this is its first
+  visual consumer.
+- **Accessible parameter surface** (WCAG 2.1 AA): every control keyboard-
+  operable (WAI-ARIA stepping: Arrow 1%, Shift+Arrow fine, PageUp/Down 10%,
+  Home/End extremes), visible focus rings on all custom-painted controls,
+  name/value/role for every knob/toggle/meter (unit-suffixed accessible values,
+  read-only meter values), section panels as accessibility focus containers
+  (grouped AT navigation without trapping Tab), and WCAG-contrast unit tests
+  pinned to the exact rendered colour pairs. New test suites:
+  `tests/gui/EditorAccessibilityTests.cpp`, `EditorLayoutTests.cpp`,
+  `BasilicaLookAndFeelContrastTests.cpp`, `CorrelationMeterTests.cpp`.
+
 ## [0.3.1] - 2026-07-31
 
 Race-fix patch release.

@@ -119,13 +119,23 @@ The reasoning and full technical detail live in `docs/architecture.md`; the numb
 - **Width, Low Width and High Width cannot create stereo width from a genuinely mono signal by themselves** - they can only scale stereo difference that is already present. On a mono input bus, Side is exactly 0 and the plugin passes the source through cleanly; Haas Mode and Decorrelate are the only controls that do anything in that situation.
 - **The voicing is research-derived, not measured against any commercial plugin's output** - see [Research-derived voicing](#research-derived-voicing-honesty-note) below for the full sourcing and its own confidence caveats, including the specific note that Bass Mono Freq's 500-600 Hz range extension is the single lowest-confidence, most-reasoned value in the plugin.
 - **Deliberately out of scope for this release**: Gerzon shuffler shelves on the Side signal, an ERB-warped allpass-cascade "Diffuse" decorrelator tier, ambience recovery / external sidechain / a dry-wet mixer for the whole plugin, a goniometer or vectorscope widget, width-guard lookahead, and rotation/asymmetry/pan of the stereo field.
-- **The GUI and a visible correlation meter are not built yet** - see [Roadmap](#roadmap--whats-not-here-yet) below; every parameter is fully controllable via generic host editors and automation in the meantime.
 - **Pre-1.0.** Release binaries for macOS and Windows are currently unsigned. Licensed AGPLv3. Breaking changes remain possible until v1.0.0.
 
 ## Research-derived voicing (honesty note)
 
 Firmament's default values and ranges (Bass Mono Freq's 80-200 Hz "typical" range, the Linkwitz-Riley crossover order, the Haas Time window, Auto Mono Safety's ballistics/dead-zone, Decorrelate's approach) are **research-derived** from public manuals, developer/product documentation, mastering-forum and trade-press consensus, and acoustics/psychoacoustics literature (see `docs/research-notes.md` for the full sourcing) - not measured against any commercial stereo-widener plugin's actual audio output, and no proprietary DSP algorithm from any other vendor was inspected, decompiled, or approximated. `docs/design-brief.md` documents exactly which numbers are directly sourced, which are sourced-but-lower-confidence, and which are reasoned choices where a source establishes a principle but not an exact number.
 
-## Roadmap / what's not here yet
+## The editor
 
-Firmament's GUI is still the plain, functional v0.1/v0.2-style slider/toggle editor plus a plain preset bar strip - every parameter above is fully controllable from the plugin's own window (and from any host's generic editor/automation lanes), but there is no custom-drawn interface yet, and the correlation/phase estimate that drives Auto Mono Safety is not yet displayed as a visible meter (the DSP value is fully computed and tested - see `docs/architecture.md` - only the visual widget is outstanding). Both are tracked for a later milestone (custom GUI + metering).
+Firmament ships the suite's M3 vector editor: a fully runtime-drawn black/gold surface (no bitmap assets) with pointer knobs on engraved scale rings, lamp toggles, and five section panels laid out in signal-flow order - **Width** (the core M/S scale and its equal-power compensation switch), **Bands** (the two Side-path crossovers and per-band widths), **Mono Safety**, **Widen** (Decorrelate and Haas), and **Output**. Choice parameters (Bass Mono Mode, Decorrelate Mode, Safety Response) are detented knobs that snap to and announce their mode names.
+
+Two needle meters show the engine's correlation estimates live: **IN** (the broadband input correlation that also drives Auto Mono Safety) on the Width panel and **OUT** (post-processing) on the Output panel, both on a -1...+1 scale with gentle meter ballistics. +1 means fully mono-compatible; readings pinned toward -1 warn that the output would cancel on a mono fold-down.
+
+### Accessibility
+
+The editor is built to WCAG 2.1 AA:
+
+- **Keyboard**: every knob and toggle is Tab-reachable. Arrows step knobs by 1% of their range, Shift+Arrow steps fine (0.1%), PageUp/PageDown by 10%, Home/End jump to the extremes; choice knobs step exactly one mode per arrow press. Toggles flip with Space/Enter. Shift-drag is the mouse analog of Shift+Arrow (fine adjustment).
+- **Visible focus**: a gold focus ring (with a dark halo) marks the focused control at all times.
+- **Screen readers**: every control exposes its printed label as its accessible name, its value with unit ("120.0 %", "-9.1 dB"), and its proper role; the five panels are announced as named groups; the meters expose their smoothed reading as a read-only value on demand.
+- **Contrast**: all rendered text/marking pairs hold at least 4.5:1 (WCAG AA), enforced by unit tests against the exact colours drawn.
