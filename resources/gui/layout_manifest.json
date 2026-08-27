@@ -1,0 +1,187 @@
+{
+ "comment": "Wave-3 compositional GUI layout for Firmament (rollout-2026-07 + DECISIONS.md D4). Coordinates are plate-render pixels on the 1264x848 wave-2 empty family plate (plate_firmament.png). Anchor semantics: knob/selector = brass cap centre, toggle = housing centre, meter = arc sprite canvas centre (see src/PluginEditorLayout.h). Census per control-inventory.md: 9 knobs (6-column grid, 2 rows), 3 selectors placed by cluster affinity (Bass Mono Mode beside Bass Freq; Safety Response on the safety row; Decorrelate Mode beside Decorrelate Amount), 6 unlabeled family toggles in two groups of three flanking the meter zone under engraved rules (D4), 1 correlation arc meter (D4) reading the processor's output correlation atomic.",
+ "plate": {
+  "asset": "plate_firmament_png",
+  "widthPx": 1264,
+  "heightPx": 848
+ },
+ "controls": [
+  {
+   "id": "correlation",
+   "kind": "meter",
+   "sprite": "arc_meter",
+   "label": "",
+   "cx": 632,
+   "cy": 235,
+   "scale": 0.8
+  },
+  {
+   "id": "autoMonoSafety",
+   "kind": "toggle",
+   "sprite": "toggle_up",
+   "label": "",
+   "cx": 205,
+   "cy": 430
+  },
+  {
+   "id": "autoMonoSafetyMultiband",
+   "kind": "toggle",
+   "sprite": "toggle_up",
+   "label": "",
+   "cx": 290,
+   "cy": 430
+  },
+  {
+   "id": "widthComp",
+   "kind": "toggle",
+   "sprite": "toggle_up",
+   "label": "",
+   "cx": 375,
+   "cy": 430
+  },
+  {
+   "id": "haasEnabled",
+   "kind": "toggle",
+   "sprite": "toggle_up",
+   "label": "",
+   "cx": 889,
+   "cy": 430
+  },
+  {
+   "id": "decorrelateEnabled",
+   "kind": "toggle",
+   "sprite": "toggle_up",
+   "label": "",
+   "cx": 974,
+   "cy": 430
+  },
+  {
+   "id": "monoAudition",
+   "kind": "toggle",
+   "sprite": "toggle_up",
+   "label": "",
+   "cx": 1059,
+   "cy": 430
+  },
+  {
+   "id": "bassMonoMode",
+   "kind": "selector",
+   "sprite": "selector_stepped",
+   "label": "BASS MODE",
+   "cx": 328,
+   "cy": 558,
+   "scale": 0.75,
+   "labelCy": 614
+  },
+  {
+   "id": "bassMonoFreq",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "BASS FREQ",
+   "cx": 449,
+   "cy": 558,
+   "scale": 0.85,
+   "labelCy": 614
+  },
+  {
+   "id": "lowWidth",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "LOW WIDTH",
+   "cx": 570,
+   "cy": 558,
+   "scale": 0.85,
+   "labelCy": 614
+  },
+  {
+   "id": "width",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "WIDTH",
+   "cx": 691,
+   "cy": 558,
+   "scale": 0.85,
+   "labelCy": 614
+  },
+  {
+   "id": "highSplitFreq",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "SPLIT",
+   "cx": 812,
+   "cy": 558,
+   "scale": 0.85,
+   "labelCy": 614
+  },
+  {
+   "id": "highWidth",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "HI WIDTH",
+   "cx": 933,
+   "cy": 558,
+   "scale": 0.85,
+   "labelCy": 614
+  },
+  {
+   "id": "safetyMode",
+   "kind": "selector",
+   "sprite": "selector_stepped",
+   "label": "RESPONSE",
+   "cx": 328,
+   "cy": 668,
+   "scale": 0.75,
+   "labelCy": 724
+  },
+  {
+   "id": "autoMonoSafetyFloorDb",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "FLOOR",
+   "cx": 449,
+   "cy": 668,
+   "scale": 0.85,
+   "labelCy": 724
+  },
+  {
+   "id": "haasTimeMs",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "HAAS TIME",
+   "cx": 570,
+   "cy": 668,
+   "scale": 0.85,
+   "labelCy": 724
+  },
+  {
+   "id": "decorrelateAmount",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "DECOR AMT",
+   "cx": 691,
+   "cy": 668,
+   "scale": 0.85,
+   "labelCy": 724
+  },
+  {
+   "id": "decorrelateMode",
+   "kind": "selector",
+   "sprite": "selector_stepped",
+   "label": "DECOR MODE",
+   "cx": 812,
+   "cy": 668,
+   "scale": 0.75,
+   "labelCy": 724
+  },
+  {
+   "id": "output",
+   "kind": "knob",
+   "sprite": "knob_brass",
+   "label": "OUTPUT",
+   "cx": 933,
+   "cy": 668,
+   "scale": 0.85,
+   "labelCy": 724
+  }
+ ]
+}

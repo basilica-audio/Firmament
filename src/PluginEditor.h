@@ -5,40 +5,45 @@
 #include <memory>
 #include <vector>
 
-#include "gui/BasilicaLookAndFeel.h"
-#include "gui/BusPanel.h"
-#include "gui/CorrelationMeter.h"
-#include "gui/PointerKnob.h"
+#include "gui/ArcNeedleMeter.h"
+#include "gui/LayoutManifest.h"
+#include "gui/MasterCropKnob.h"
+#include "gui/PlateTypography.h"
+#include "gui/SpriteToggle.h"
 #include "presets/PresetBar.h"
 
 class FirmamentAudioProcessor;
 
-// M3 custom vector editor + accessible parameter surface (issue #4), ported
-// from Miserere's merged M3 implementation (basilica-audio/miserere PR #31).
+// Wave-3 COMPOSITIONAL photoreal editor (campaign 2026-08, supersedes the
+// M3 vector editor - BusPanel/PointerKnob/CorrelationMeter stay in the
+// tree per the suite's "superseded, not deleted" convention but are no
+// longer used): the accepted EMPTY family plate render
+// (resources/gui/plate_firmament.png) is the sole baked background, and
+// every control is composited live from the extracted control-sprite
+// library at the coordinates in resources/gui/layout_manifest.json (the
+// single source of truth - see gui/LayoutManifest.h). Draw order:
 //
-// Everything is drawn at runtime by BasilicaLookAndFeel / the src/gui
-// components - no photoreal PNG assets exist in this plugin (unlike the
-// filmstrip/faceplate siblings): pointer knobs with engraved scale rings,
-// lamp toggles, and two vector correlation needle meters (input and output
-// - the broadband meter surface FirmamentAudioProcessor exposes), grouped
-// into one BusPanel per processing section in signal-flow order (Width /
-// Bands / Mono Safety / Widen / Output).
+//   1. plate render (paint())
+//   2. static control sprites - knob/selector bodies and the needle-free
+//      D4 arc-dial face at their manifest positions
+//   3. D4 toggle-group dressing - two thin engraved rules + captions
+//      (fmt::layout::toggleGroupDressings; the empty plate bakes neither)
+//   4. engraved lettering - PlateTypography, gilded gold on dark basalt
+//   5. rotating cap crops - one MasterCropKnob child per knob/selector
+//   6. lever toggles - SpriteToggle children (up = ON, mirrored = OFF)
+//   7. needle overlay - the ArcNeedleMeter child (glow + master-extracted
+//      needle rotated live from the processor's output-correlation
+//      atomic; NADEL-REGEL compliant)
 //
-// FOCUS ORDER CONTRACT (WCAG 2.4.3, suite-wide convention): JUCE's default
-// traverser walks children in z-order, which equals CREATION order - the
-// constructor therefore creates every control in signal-flow/reading order
-// (preset bar first, then panel by panel, left-to-right within each row),
-// and nothing may reorder children afterwards. Each BusPanel is an
-// accessibility focus container (NOT a keyboard focus container - see
-// BusPanel.h), so screen readers hear "Mono Safety, Floor" while Tab still
-// walks the whole editor.
+// Firmament-specific control set (rollout-2026-07/firmament/
+// control-inventory.md + DECISIONS.md D4): 9 knobs + 3 stepped selectors
+// in a 6-column 2-row grid, 6 family toggles in two groups of three
+// flanking the meter zone, and the D4 correlation arc instrument reading
+// the REAL output-correlation estimate (no dead decoration).
 //
-// Controls are built data-driven from ID/label tables (see the .cpp) - all
-// float AND choice parameters are PointerKnobs (choice knobs snap to their
-// integer detents and announce the choice NAME - the v0.3.0 interim
-// editor's ComboBox selectors are gone), bool parameters are real
-// juce::ToggleButtons (focusable and Space/Enter-operable out of the box,
-// reported as toggle buttons by AT).
+// Window scaling is STEPPED (100/150/200%, UA-style corner control,
+// persisted as a plain property on the APVTS state tree), matching every
+// merged M3 editor in the suite.
 class FirmamentAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                             private juce::Timer
 {
@@ -49,70 +54,63 @@ public:
     void paint (juce::Graphics& g) override;
     void resized() override;
 
+    // The parsed layout manifest - exposed read-only so tests assert
+    // layout invariants against the exact data this editor composites
+    // from (tests/gui/EditorLayoutTests.cpp).
+    const basilica::gui::LayoutManifest& layoutManifest() const noexcept { return manifest; }
+
 private:
     using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
 
     struct Knob
     {
-        basilica::gui::PointerKnob slider;
-        juce::Label label;
+        const basilica::gui::ManifestControl* entry = nullptr;
+        std::unique_ptr<basilica::gui::MasterCropKnob> slider;
         std::unique_ptr<SliderAttachment> attachment;
     };
 
     struct Toggle
     {
-        juce::ToggleButton button;
+        const basilica::gui::ManifestControl* entry = nullptr;
+        std::unique_ptr<basilica::gui::SpriteToggle> button;
         std::unique_ptr<ButtonAttachment> attachment;
     };
 
-    // One section faceplate: the BusPanel component plus its control rows
-    // (each row a left-to-right list of the controls laid out in it) and
-    // an optional correlation needle meter in the panel's right bay.
-    struct Panel
+    struct Meter
     {
-        std::unique_ptr<basilica::gui::BusPanel> component;
-        std::vector<std::vector<juce::Component*>> rows;
-        basilica::gui::CorrelationMeter* meter = nullptr; // owned via `meters`
+        const basilica::gui::ManifestControl* entry = nullptr;
+        std::unique_ptr<basilica::gui::ArcNeedleMeter> component;
     };
 
-    Panel& addPanel (const juce::String& sectionTitle);
-    Knob& addKnob (Panel& panel, const char* parameterId, const juce::String& labelText);
-    Toggle& addToggle (Panel& panel, const char* parameterId, const juce::String& labelText);
-    basilica::gui::CorrelationMeter& addMeter (Panel& panel, const juce::String& accessibleTitle,
-                                               const juce::String& faceLegend);
-
+    juce::Image spriteImageFor (const juce::String& spriteKey) const;
+    void buildControlsFromManifest();
+    void applyScaleStep (int newStepIndex);
+    void cycleScale();
+    void drawStaticSprites (juce::Graphics& g) const;
+    void drawToggleGroupDressing (juce::Graphics& g) const;
+    void drawPlateLettering (juce::Graphics& g) const;
     void timerCallback() override;
 
-    static int slotWidthFor (const juce::Component& control) noexcept;
-    static int rowWidth (const std::vector<juce::Component*>& row) noexcept;
-    int panelRequiredWidth (const Panel& panel) const noexcept;
-    int panelRequiredHeight (const Panel& panel) const noexcept;
+    float plateScale() const noexcept;
+    juce::Point<float> plateOrigin() const noexcept;
 
     FirmamentAudioProcessor& audioProcessor;
 
-    // Must be constructed before any child that paints with it and
-    // installed on `this` so it propagates to every child (including the
-    // preset bar's stock buttons/menus/dialogs).
-    basilica::gui::BasilicaLookAndFeel lookAndFeel;
+    basilica::gui::LayoutManifest manifest;
 
-    // M2 preset system - constructed after the localisation frame is
-    // installed (see the constructor) so its TRANS()'d strings pick up the
-    // right language from the very first paint.
+    juce::Image plateImage;
+    juce::Image knobSprite, selectorSprite, toggleSprite, arcMeterSprite, needleSprite;
+
     basilica::presets::PresetBar presetBar;
+    juce::TextButton scaleButton;
+    int scaleStepIndex = 0; // 0 = 100%, 1 = 150%, 2 = 200%
 
-    std::vector<std::unique_ptr<Knob>> knobs;
-    std::vector<std::unique_ptr<Toggle>> toggles;
-    std::vector<std::unique_ptr<basilica::gui::CorrelationMeter>> meters;
-    std::vector<std::unique_ptr<Panel>> panels;
+    std::vector<Knob> knobs;
+    std::vector<Toggle> toggles;
+    std::vector<Meter> meters;
 
-    // Signal-flow panels, kept as raw pointers into `panels` for layout:
-    // all five stack as full-width bands, top to bottom.
-    Panel* widthPanel = nullptr;
-    Panel* bandsPanel = nullptr;
-    Panel* safetyPanel = nullptr;
-    Panel* widenPanel = nullptr;
-    Panel* outputPanel = nullptr;
+    basilica::gui::PlateTypography typography;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FirmamentAudioProcessorEditor)
 };

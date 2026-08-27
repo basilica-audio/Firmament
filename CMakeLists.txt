@@ -89,6 +89,29 @@ juce_add_binary_data(FirmamentBinaryData SOURCES
     # the fully JUCE-drawn editor renders.
     resources/fonts/EBGaramond-Regular.ttf
     resources/fonts/EBGaramond-SemiBold.ttf
+    # Wave-3 compositional GUI (campaign 2026-08, supersedes the M3 vector
+    # editor's runtime-drawn visuals - those components stay in the tree per
+    # the suite's "superseded, not deleted" convention):
+    #   - plate_firmament.png: the accepted EMPTY family plate render
+    #     (.scaffold/gui-assets/rollout-2026-07/firmament/out/plate-01.png -
+    #     see out/VERDICT.md).
+    #   - sprite_*.png: extracted control sprites from
+    #     .scaffold/gui-assets/sprite-library/ (see its provenance.md for
+    #     source render + crop rect per sprite), backing-blended via
+    #     blend_sprite_backing.py so their basalt patches cross-fade into
+    #     the local plate ground (no visible rectangular patches).
+    #   - sprite_needle_master05.png: master-diff-extracted needle
+    #     (NADEL-REGEL; provenance JSON alongside the PNG).
+    #   - layout_manifest.json: the compositional layout manifest, the
+    #     single source of truth for control positions (see
+    #     src/gui/LayoutManifest.h).
+    resources/gui/plate_firmament.png
+    resources/gui/sprite_knob_brass.png
+    resources/gui/sprite_selector_stepped.png
+    resources/gui/sprite_toggle_up.png
+    resources/gui/sprite_arc_meter.png
+    resources/gui/sprite_needle_master05.png
+    resources/gui/layout_manifest.json
 )
 
 # ==============================================================================
@@ -167,6 +190,9 @@ target_link_libraries(Tests PRIVATE SharedCode Catch2::Catch2)
 target_compile_definitions(Tests PRIVATE
     $<TARGET_PROPERTY:Firmament,COMPILE_DEFINITIONS>
     JUCE_MODAL_LOOPS_PERMITTED=1
+    # Absolute path to docs/, so tests/gui/EditorSnapshotTests.cpp can write
+    # the committed docs/gui-preview.png directly rather than a copy step.
+    FIRMAMENT_DOCS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs"
 )
 
 set_target_properties(Tests PROPERTIES XCODE_GENERATE_SCHEME ON)

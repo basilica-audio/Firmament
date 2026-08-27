@@ -1,245 +1,261 @@
 #include "PluginEditor.h"
+#include "PluginEditorLayout.h"
 #include "PluginProcessor.h"
-#include "gui/BusPanel.h"
-#include "gui/CorrelationMeter.h"
 
-#include <catch2/catch_approx.hpp>
+#include <BinaryData.h>
+
 #include <catch2/catch_test_macros.hpp>
 
-#include <functional>
+#include <algorithm>
+#include <cmath>
+#include <map>
 #include <vector>
 
-// M3 vector-editor layout tests (issue #4). Unlike the photoreal siblings
-// (whose EditorLayoutTests assert hand-measured pixel manifests against
-// baked master renders), Firmament's geometry is COMPUTED from the layout
-// constants + control tables in PluginEditor.cpp - so the manifest under
-// test here is the real constructed component tree itself: containment, no
-// overlap, and full parameter coverage. Any arithmetic slip in the layout
-// constants shows up as a concrete clipped/colliding control here.
+// Wave-3 compositional-layout invariants, asserted against the SAME parsed
+// manifest the editor composites from (PluginEditor::layoutManifest() /
+// gui/LayoutManifest.h) - never a second hand-maintained coordinate list.
+// The expected control census comes from the rollout control inventory
+// (.scaffold/gui-assets/rollout-2026-07/firmament/control-inventory.md +
+// DECISIONS.md D4): 9 knobs + 3 selectors in a 6-column 2-row grid,
+// 6 toggles in two mirrored groups of three, 1 correlation arc meter.
 namespace
 {
-    template <typename ComponentType>
-    void visitDescendants (juce::Component& parent, const std::function<void (ComponentType&)>& visit)
+    basilica::gui::LayoutManifest parseManifest()
     {
-        for (int i = 0; i < parent.getNumChildComponents(); ++i)
-        {
-            auto* child = parent.getChildComponent (i);
-
-            if (auto* typed = dynamic_cast<ComponentType*> (child))
-                visit (*typed);
-
-            visitDescendants<ComponentType> (*child, visit);
-        }
+        return basilica::gui::LayoutManifest::parse (BinaryData::layout_manifest_json,
+                                                     BinaryData::layout_manifest_jsonSize);
     }
 
-    juce::Rectangle<int> boundsInEditor (const juce::Component& component, const juce::Component& editor)
+    // The plate's usable control field (inside the gold pinstripe border) -
+    // family plate geometry, slightly conservative on purpose.
+    constexpr float fieldLeft = 85.0f, fieldRight = 1162.0f;
+    constexpr float fieldTop = 85.0f, fieldBottom = 768.0f;
+
+    // Baked central divider flourish (family plate: y ~448..459,
+    // x ~510..740) - no control cap may cover it.
+    const juce::Rectangle<float> dividerKeepOut (500.0f, 444.0f, 250.0f, 20.0f);
+
+    // Baked amber vent grilles (family plate, measured).
+    const juce::Rectangle<float> ventLeftKeepOut (150.0f, 488.0f, 142.0f, 195.0f);
+    const juce::Rectangle<float> ventRightKeepOut (963.0f, 488.0f, 142.0f, 195.0f);
+
+    float capRadiusPlatePx (const basilica::gui::ManifestControl& control)
     {
-        auto bounds = component.getBounds();
+        using namespace fmt::layout;
 
-        for (const auto* ancestor = component.getParentComponent();
-             ancestor != nullptr && ancestor != &editor;
-             ancestor = ancestor->getParentComponent())
-        {
-            bounds += ancestor->getPosition();
-        }
+        if (control.kind == "selector")
+            return selectorCapRadius * control.scale;
 
-        return bounds;
+        if (control.kind == "toggle")
+            return 40.0f * control.scale; // between housing half-width (~33) and half-height (~48): the D4 triplets pack at an 85 px pitch, so the circle proxy must not overstate the housing's real width
+
+        return knobCapRadius * control.scale;
     }
-}
 
-TEST_CASE ("Every automatable parameter has exactly one attached control", "[gui][layout]")
-{
-    FirmamentAudioProcessor processor;
-    processor.prepareToPlay (48000.0, 512);
-    FirmamentAudioProcessorEditor editor (processor);
-
-    int sliders = 0, toggles = 0;
-    visitDescendants<juce::Slider> (editor, [&] (juce::Slider&) { ++sliders; });
-    visitDescendants<juce::ToggleButton> (editor, [&] (juce::ToggleButton&) { ++toggles; });
-
-    // The APVTS carries 9 float + 3 choice + 6 bool parameters = 18
-    // (ParameterIds.h). One knob per float/choice parameter, one toggle per
-    // bool parameter - no parameter may be left off the M3 surface, and no
-    // control may exist without a parameter.
-    CHECK ((int) processor.getParameters().size() == 18);
-    CHECK (sliders + toggles == (int) processor.getParameters().size());
-    CHECK (sliders == 12);
-    CHECK (toggles == 6);
-}
-
-TEST_CASE ("Moving a knob moves its parameter - one wiring spot check per section", "[gui][layout]")
-{
-    FirmamentAudioProcessor processor;
-    processor.prepareToPlay (48000.0, 512);
-    FirmamentAudioProcessorEditor editor (processor);
-
-    struct Expectation
+    // The arc meter is a wide rectangle, not a disc - its hardware extent
+    // for keep-out purposes (the sprite canvas minus the blended margin).
+    juce::Rectangle<float> arcHardwareBox (const basilica::gui::ManifestControl& meter)
     {
-        const char* title;      // unique across the whole editor
-        const char* parameterId;
-        double sliderValue;     // a legal, non-default value
-        float expectedRaw;      // denormalised parameter value afterwards
-    };
-
-    const Expectation expectations[] = {
-        { "Width", "width", 150.0, 150.0f },                 // Width
-        { "High Width", "highWidth", 150.0, 150.0f },        // Bands
-        { "Floor", "autoMonoSafetyFloorDb", -12.0, -12.0f }, // Mono Safety
-        { "Haas Time", "haasTimeMs", 10.0, 10.0f },          // Widen
-        { "Output", "output", 6.0, 6.0f },                   // Output
-    };
-
-    for (const auto& expectation : expectations)
-    {
-        juce::Slider* knob = nullptr;
-        visitDescendants<juce::Slider> (editor, [&] (juce::Slider& s)
-        {
-            if (s.getTitle() == expectation.title)
-                knob = &s;
-        });
-
-        REQUIRE (knob != nullptr);
-        INFO ("knob \"" << expectation.title << "\" -> " << expectation.parameterId);
-
-        auto* raw = processor.apvts.getRawParameterValue (expectation.parameterId);
-        REQUIRE (raw != nullptr);
-
-        knob->setValue (expectation.sliderValue, juce::sendNotificationSync);
-        CHECK (raw->load() == Catch::Approx (expectation.expectedRaw).margin (1.0e-4));
+        using namespace fmt::layout;
+        const auto w = (arcSpriteWidthPx - 40.0f) * meter.scale;
+        const auto h = (arcSpriteHeightPx - 30.0f) * meter.scale;
+        return { meter.cx - w * 0.5f, meter.cy - h * 0.5f, w, h };
     }
 }
 
-TEST_CASE ("All controls, labels and meters stay inside their panel; panels stay inside the editor", "[gui][layout]")
+TEST_CASE ("Manifest parses and matches the rollout control inventory census", "[gui][layout]")
 {
-    FirmamentAudioProcessor processor;
-    processor.prepareToPlay (48000.0, 512);
-    FirmamentAudioProcessorEditor editor (processor);
+    const auto manifest = parseManifest();
 
-    const auto editorBounds = editor.getLocalBounds();
-    CHECK (editorBounds.getWidth() > 0);
-    CHECK (editorBounds.getHeight() > 0);
+    REQUIRE (manifest.isValid());
+    CHECK (manifest.plateWidthPx == fmt::layout::plateCanvasWidthPx);
+    CHECK (manifest.plateHeightPx == fmt::layout::plateCanvasHeightPx);
 
-    int panelsSeen = 0;
-
-    visitDescendants<basilica::gui::BusPanel> (editor, [&] (basilica::gui::BusPanel& panel)
-    {
-        ++panelsSeen;
-        INFO ("panel \"" << panel.getTitle().toStdString() << "\" bounds "
-              << panel.getBounds().toString().toStdString());
-        CHECK (editorBounds.contains (panel.getBounds()));
-
-        // Every direct child (knobs incl. their value boxes, attached
-        // labels, toggles, the meter) must be fully inside the panel.
-        for (int i = 0; i < panel.getNumChildComponents(); ++i)
-        {
-            const auto* child = panel.getChildComponent (i);
-            INFO ("child \"" << child->getName().toStdString() << "\" bounds "
-                  << child->getBounds().toString().toStdString()
-                  << " in panel \"" << panel.getTitle().toStdString() << "\" "
-                  << panel.getLocalBounds().toString().toStdString());
-            CHECK (panel.getLocalBounds().contains (child->getBounds()));
-        }
-    });
-
-    CHECK (panelsSeen == 5);
+    CHECK (manifest.ofKind ("knob").size() == 9);
+    CHECK (manifest.ofKind ("selector").size() == 3);
+    CHECK (manifest.ofKind ("toggle").size() == 6);
+    CHECK (manifest.ofKind ("meter").size() == 1); // the D4 correlation arc instrument
+    CHECK (manifest.controls.size() == 19);
 }
 
-TEST_CASE ("No two interactive controls or meters overlap", "[gui][layout]")
+TEST_CASE ("Every non-meter manifest control id resolves to a real APVTS parameter of the right type", "[gui][layout]")
 {
+    const auto manifest = parseManifest();
+    REQUIRE (manifest.isValid());
+
     FirmamentAudioProcessor processor;
-    processor.prepareToPlay (48000.0, 512);
-    FirmamentAudioProcessorEditor editor (processor);
 
-    struct Entry
+    for (const auto& control : manifest.controls)
     {
-        juce::String name;
-        juce::Rectangle<int> bounds;
-    };
+        if (control.kind == "meter")
+            continue; // meter ids are editor-defined display elements, not parameters
 
-    std::vector<Entry> entries;
+        auto* parameter = processor.apvts.getParameter (control.id);
+        INFO ("manifest id \"" << control.id.toStdString() << "\"");
+        REQUIRE (parameter != nullptr);
 
-    const auto collect = [&] (juce::Component& component)
+        if (control.kind == "toggle")
+            CHECK (dynamic_cast<juce::AudioParameterBool*> (parameter) != nullptr);
+        else if (control.kind == "selector")
+            CHECK (dynamic_cast<juce::AudioParameterChoice*> (parameter) != nullptr);
+        else if (control.kind == "knob")
+            CHECK (dynamic_cast<juce::AudioParameterFloat*> (parameter) != nullptr);
+    }
+}
+
+TEST_CASE ("Knobs and selectors share a uniform 6-column, 2-row grid", "[gui][layout]")
+{
+    const auto manifest = parseManifest();
+    REQUIRE (manifest.isValid());
+
+    std::map<float, std::vector<float>> rows; // cy -> sorted cx list
+
+    for (const auto& control : manifest.controls)
+        if (control.kind == "knob" || control.kind == "selector")
+            rows[control.cy].push_back (control.cx);
+
+    REQUIRE (rows.size() == 2);
+
+    std::vector<float> columns;
+
+    for (auto& [cy, xs] : rows)
     {
-        entries.push_back ({ component.getTitle(), boundsInEditor (component, editor) });
-    };
+        juce::ignoreUnused (cy);
+        std::sort (xs.begin(), xs.end());
+        CHECK (xs.size() == 6);
 
-    visitDescendants<juce::Slider> (editor, [&] (juce::Slider& s) { collect (s); });
-    visitDescendants<juce::ToggleButton> (editor, [&] (juce::ToggleButton& t) { collect (t); });
-    visitDescendants<basilica::gui::CorrelationMeter> (editor, [&] (basilica::gui::CorrelationMeter& m) { collect (m); });
+        // Uniform column rhythm (the LAYOUT-INVARIANTE).
+        for (size_t i = 2; i < xs.size(); ++i)
+            CHECK (std::abs ((xs[i] - xs[i - 1]) - (xs[1] - xs[0])) < 1.0f);
 
-    // 12 knobs + 6 toggles + 2 meters - the pairwise scan below must not
-    // pass vacuously on an empty collection.
-    REQUIRE (entries.size() == 20);
+        if (columns.empty())
+            columns = xs;
+        else
+            for (size_t i = 0; i < xs.size(); ++i)
+                CHECK (std::abs (columns[i] - xs[i]) < 1.0f); // rows share columns
+    }
+}
 
-    for (size_t i = 0; i < entries.size(); ++i)
+TEST_CASE ("Toggle groups are two mirrored triplets flanking the meter zone", "[gui][layout]")
+{
+    const auto manifest = parseManifest();
+    REQUIRE (manifest.isValid());
+
+    const auto toggles = manifest.ofKind ("toggle");
+    REQUIRE (toggles.size() == 6);
+
+    const auto centre = (float) fmt::layout::plateCanvasWidthPx * 0.5f;
+    std::vector<float> leftXs, rightXs;
+
+    for (const auto* toggle : toggles)
     {
-        for (size_t j = i + 1; j < entries.size(); ++j)
+        CHECK (toggle->cy == toggles.front()->cy); // one shared row
+        (toggle->cx < centre ? leftXs : rightXs).push_back (toggle->cx);
+    }
+
+    REQUIRE (leftXs.size() == 3);
+    REQUIRE (rightXs.size() == 3);
+
+    std::sort (leftXs.begin(), leftXs.end());
+    std::sort (rightXs.begin(), rightXs.end());
+
+    // Mirror symmetry about the plate centre line.
+    for (size_t i = 0; i < 3; ++i)
+        CHECK (std::abs ((centre - leftXs[i]) - (rightXs[2 - i] - centre)) < 1.0f);
+}
+
+TEST_CASE ("Every control stays inside the pinstripe field and off the baked plate art", "[gui][layout]")
+{
+    const auto manifest = parseManifest();
+    REQUIRE (manifest.isValid());
+
+    for (const auto& control : manifest.controls)
+    {
+        INFO ("control \"" << control.id.toStdString() << "\"");
+
+        if (control.kind == "meter")
         {
-            INFO ("\"" << entries[i].name.toStdString() << "\" " << entries[i].bounds.toString().toStdString()
-                  << " vs \"" << entries[j].name.toStdString() << "\" " << entries[j].bounds.toString().toStdString());
-            CHECK_FALSE (entries[i].bounds.intersects (entries[j].bounds));
+            const auto box = arcHardwareBox (control);
+            CHECK (box.getX() >= fieldLeft);
+            CHECK (box.getRight() <= fieldRight);
+            CHECK (box.getY() >= fieldTop);
+            CHECK (box.getBottom() <= fieldBottom);
+            CHECK_FALSE (box.intersects (ventLeftKeepOut));
+            CHECK_FALSE (box.intersects (ventRightKeepOut));
+            CHECK_FALSE (box.intersects (dividerKeepOut));
+            continue;
+        }
+
+        const auto r = capRadiusPlatePx (control);
+
+        CHECK (control.cx - r >= fieldLeft);
+        CHECK (control.cx + r <= fieldRight);
+        CHECK (control.cy - r >= fieldTop);
+        CHECK (control.cy + r <= fieldBottom);
+
+        const juce::Rectangle<float> capBox (control.cx - r, control.cy - r, 2.0f * r, 2.0f * r);
+        CHECK_FALSE (capBox.intersects (dividerKeepOut));
+        CHECK_FALSE (capBox.intersects (ventLeftKeepOut));
+        CHECK_FALSE (capBox.intersects (ventRightKeepOut));
+
+        if (control.labelCy > 0.0f)
+        {
+            using namespace fmt::layout;
+            const juce::Rectangle<float> labelBox (control.cx - labelBoxWidthPlatePx * 0.5f,
+                                                   control.labelCy - labelBoxHeightPlatePx * 0.5f,
+                                                   labelBoxWidthPlatePx, labelBoxHeightPlatePx);
+
+            CHECK (labelBox.getY() >= fieldTop);
+            CHECK (labelBox.getBottom() <= fieldBottom);
+
+            // Lettering never intrudes into its own control's rotating cap.
+            CHECK (labelBox.getY() >= control.cy + r - 1.0f);
         }
     }
 }
 
-TEST_CASE ("Panels do not overlap each other or the preset bar", "[gui][layout]")
+TEST_CASE ("No two composited elements overlap", "[gui][layout]")
 {
-    FirmamentAudioProcessor processor;
-    processor.prepareToPlay (48000.0, 512);
-    FirmamentAudioProcessorEditor editor (processor);
+    const auto manifest = parseManifest();
+    REQUIRE (manifest.isValid());
 
-    std::vector<juce::Rectangle<int>> panelBounds;
-
-    visitDescendants<basilica::gui::BusPanel> (editor, [&] (basilica::gui::BusPanel& panel)
+    for (size_t a = 0; a < manifest.controls.size(); ++a)
     {
-        panelBounds.push_back (panel.getBounds());
-    });
-
-    REQUIRE (panelBounds.size() == 5);
-
-    for (size_t i = 0; i < panelBounds.size(); ++i)
-        for (size_t j = i + 1; j < panelBounds.size(); ++j)
-            CHECK_FALSE (panelBounds[i].intersects (panelBounds[j]));
-
-    // The preset bar band sits above all panels.
-    juce::Component* presetBar = nullptr;
-
-    for (int i = 0; i < editor.getNumChildComponents(); ++i)
-        if (dynamic_cast<basilica::presets::PresetBar*> (editor.getChildComponent (i)) != nullptr)
-            presetBar = editor.getChildComponent (i);
-
-    REQUIRE (presetBar != nullptr);
-
-    for (const auto& bounds : panelBounds)
-        CHECK_FALSE (presetBar->getBounds().intersects (bounds));
-}
-
-TEST_CASE ("Every knob's visible label text matches its accessible title (label-in-name)", "[gui][layout][a11y]")
-{
-    FirmamentAudioProcessor processor;
-    processor.prepareToPlay (48000.0, 512);
-    FirmamentAudioProcessorEditor editor (processor);
-
-    // WCAG 2.5.3 Label in Name: the label painted next to a knob must be
-    // the same string AT users hear as the control's name - a mismatch
-    // breaks voice-control users ("click Width" targeting a control whose
-    // accessible name is something else).
-    int labelledKnobs = 0;
-
-    visitDescendants<juce::Label> (editor, [&] (juce::Label& label)
-    {
-        if (auto* attached = label.getAttachedComponent())
+        for (size_t b = a + 1; b < manifest.controls.size(); ++b)
         {
-            if (auto* slider = dynamic_cast<juce::Slider*> (attached))
+            const auto& ca = manifest.controls[a];
+            const auto& cb = manifest.controls[b];
+
+            INFO (ca.id.toStdString() << " vs " << cb.id.toStdString());
+
+            if (ca.kind == "meter" || cb.kind == "meter")
             {
-                ++labelledKnobs;
-                INFO ("label \"" << label.getText().toStdString() << "\" for knob \""
-                      << slider->getTitle().toStdString() << "\"");
-                CHECK (label.getText() == slider->getTitle());
+                const auto& meter = ca.kind == "meter" ? ca : cb;
+                const auto& other = ca.kind == "meter" ? cb : ca;
+                const auto r = capRadiusPlatePx (other);
+                const juce::Rectangle<float> otherBox (other.cx - r, other.cy - r, 2.0f * r, 2.0f * r);
+                CHECK_FALSE (arcHardwareBox (meter).intersects (otherBox));
+                continue;
             }
-        }
-    });
 
-    // Every one of the 12 knobs carries an attached, matching label.
-    CHECK (labelledKnobs == 12);
+            const auto minGap = capRadiusPlatePx (ca) + capRadiusPlatePx (cb);
+            const auto dx = ca.cx - cb.cx;
+            const auto dy = ca.cy - cb.cy;
+
+            CHECK (dx * dx + dy * dy >= minGap * minGap);
+        }
+    }
+}
+
+TEST_CASE ("Editor base size derives from the plate geometry", "[gui][layout]")
+{
+    using namespace fmt::layout;
+
+    FirmamentAudioProcessor processor;
+    processor.prepareToPlay (48000.0, 512);
+    FirmamentAudioProcessorEditor editor (processor);
+
+    CHECK (editor.getWidth() == baseEditorWidth);
+    CHECK (editor.getHeight() == baseEditorHeight);
+    CHECK (editor.layoutManifest().isValid());
 }
