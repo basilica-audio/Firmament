@@ -7,7 +7,7 @@
 [![CI](https://github.com/basilica-audio/firmament/actions/workflows/ci.yml/badge.svg)](https://github.com/basilica-audio/firmament/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-> **Work in progress.** Firmament is pre-1.0 and under active development. Binaries for macOS and Windows are available from the [Releases](../../releases) page (currently unsigned — see the release notes); building from source works too. Expect breaking changes until v1.0.0 ships (see [Roadmap](#roadmap)).
+> **Work in progress.** Firmament is pre-1.0 and under active development. Binaries for macOS and Windows are available from the [Releases](../../releases) page (macOS builds are signed with a Developer ID certificate, notarized and stapled); building from source works too. Expect breaking changes until v1.0.0 ships (see [Roadmap](#roadmap)).
 
 <!-- ==BEGIN BODY== (plugin engineer: replace this block with What it is / Features / Signal flow / Roadmap) -->
 ## What it is
@@ -66,9 +66,16 @@ Full musical description of each parameter: [`docs/manual.md`](docs/manual.md).
 | M4 | Release engineering - signing, notarization, installers, v1.0.0 | Planned |
 <!-- ==END BODY== -->
 
+## Documentation
+
+- [`docs/manual.md`](docs/manual.md) — the user manual: what every control does, and how to use it
+- [`docs/presets.md`](docs/presets.md) — what each factory preset is for
+- [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each release
+- [Firmament on basilica-audio.github.io](https://basilica-audio.github.io/website/firmament/) — the product page (English and German)
+
 ## Installation
 
-No pre-built binaries are published yet (see the work-in-progress notice above). Once releases begin, installation will follow the standard plugin locations:
+Download the archive for your platform from the [Releases](../../releases) page and copy the bundles into the standard plugin locations:
 
 **macOS**
 

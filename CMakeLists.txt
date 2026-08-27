@@ -47,6 +47,10 @@ juce_add_plugin(Firmament
     PLUGIN_CODE Frmm
     FORMATS AU VST3 Standalone
     PRODUCT_NAME "Firmament"
+    COMPANY_WEBSITE "https://basilica-audio.github.io/website/"
+    COMPANY_COPYRIGHT "Copyright (c) 2026 Yves Vogl"
+    DESCRIPTION "Mid/side stereo widener and imager with bass-mono"
+    VST3_CATEGORIES Fx Spatial Stereo
     # Relative paths are resolved against this CMakeLists.txt's directory and
     # validated at configure time (JUCE 8.0.14, JUCEModuleSupport.cmake's
     # _juce_make_absolute_and_check).

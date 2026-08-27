@@ -119,7 +119,7 @@ The reasoning and full technical detail live in `docs/architecture.md`; the numb
 - **Width, Low Width and High Width cannot create stereo width from a genuinely mono signal by themselves** - they can only scale stereo difference that is already present. On a mono input bus, Side is exactly 0 and the plugin passes the source through cleanly; Haas Mode and Decorrelate are the only controls that do anything in that situation.
 - **The voicing is research-derived, not measured against any commercial plugin's output** - see [Research-derived voicing](#research-derived-voicing-honesty-note) below for the full sourcing and its own confidence caveats, including the specific note that Bass Mono Freq's 500-600 Hz range extension is the single lowest-confidence, most-reasoned value in the plugin.
 - **Deliberately out of scope for this release**: Gerzon shuffler shelves on the Side signal, an ERB-warped allpass-cascade "Diffuse" decorrelator tier, ambience recovery / external sidechain / a dry-wet mixer for the whole plugin, a goniometer or vectorscope widget, width-guard lookahead, and rotation/asymmetry/pan of the stereo field.
-- **Pre-1.0.** Release binaries for macOS and Windows are currently unsigned. Licensed AGPLv3. Breaking changes remain possible until v1.0.0.
+- **Pre-1.0.** Release binaries for macOS are Developer-ID-signed, notarised and stapled; Windows binaries are not yet Authenticode-signed. Licensed AGPLv3. Breaking changes remain possible until v1.0.0.
 
 ## Research-derived voicing (honesty note)
 
