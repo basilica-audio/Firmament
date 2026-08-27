@@ -205,11 +205,12 @@ TEST_CASE ("Long-run stability: after a loud burst, a silent tail decays to exac
         processor.processBlock (buffer, midi);
         REQUIRE (TestHelpers::allSamplesFinite (buffer));
 
-        if (block < 2 * blocksPerSecond)
-            continue;
-
-        worstTail = juce::jmax (worstTail, TestHelpers::peakAbsolute (buffer));
-
+        // The subnormal census runs from the FIRST silent block: with
+        // FTZ/DAZ engaged no output sample can ever classify as subnormal,
+        // while without it the decaying tail itself sweeps through the
+        // subnormal range on its way down and trips this on every
+        // platform. worstTail, by contrast, only counts after the
+        // legitimate ring-out window.
         for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
         {
             const auto* data = buffer.getReadPointer (channel);
@@ -222,6 +223,11 @@ TEST_CASE ("Long-run stability: after a loud burst, a silent tail decays to exac
                     ++subnormalSamples;
             }
         }
+
+        if (block < 2 * blocksPerSecond)
+            continue;
+
+        worstTail = juce::jmax (worstTail, TestHelpers::peakAbsolute (buffer));
     }
 
     const auto silentTicks = juce::Time::getHighResolutionTicks() - silentStart;
