@@ -302,6 +302,26 @@ private:
     double sampleRate = 44100.0;
     int preparedMaxBlockSize = 0;
 
+    // Rest-flush threshold (fleet audit class 2b, issue #33): the exact
+    // value juce_dsp's own per-block snapToZero() pass used
+    // (JUCE_SNAP_TO_ZERO, juce_FloatVectorOperations.h, JUCE 8.0.14) before
+    // the fleet disabled JUCE_DSP_ENABLE_SNAP_TO_ZERO. With that pass gone,
+    // the LR4/TPT crossover state was measured parking on a rounding/FTZ
+    // fixed point instead of decaying to zero (a constant ~2.6e-37 resting
+    // output on arm64, ~6.6e-36 on x86_64) - see process() for the
+    // silence-gated flush that replaces the library pass.
+    static constexpr float restFlushThreshold = 1.0e-8f;
+
+    // The flush must never touch in-flight audio: an impulse can be
+    // travelling through the Linear Phase FIR (N/2 samples) or the Haas
+    // delay (up to 40 ms) while the *input* is already silent. One full
+    // second of contiguous silent input is an order-of-magnitude upper
+    // bound over every structural delay in the engine at any sample rate,
+    // so only a genuinely drained engine can be flushed.
+    juce::int64 restFlushDwellSamples = 48000;
+    juce::int64 silentInputStreak = 0;
+    bool restFlushed = false;
+
     // ---- crossovers / filters -------------------------------------------
     // The bass-mono crossover operates on the single derived Side stream
     // (prepared mono); also used for the low/high multiband width split.

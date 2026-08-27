@@ -107,6 +107,11 @@ void FirmamentEngine::prepare (const juce::dsp::ProcessSpec& spec)
     sampleRate = spec.sampleRate;
     preparedMaxBlockSize = static_cast<int> (spec.maximumBlockSize);
 
+    // One second at the prepared rate - see restFlushDwellSamples.
+    restFlushDwellSamples = static_cast<juce::int64> (std::llround (spec.sampleRate > 0.0 ? spec.sampleRate : 48000.0));
+    silentInputStreak = 0;
+    restFlushed = false;
+
     // Every crossover/allpass operates on a single derived stream,
     // independent of however many channels the host bus has.
     juce::dsp::ProcessSpec monoSpec = spec;
@@ -504,6 +509,43 @@ void FirmamentEngine::process (juce::dsp::AudioBlock<float>& block) noexcept
     if (preparedMaxBlockSize <= 0)
         return;
 
+    // Exact-zero rest guarantee (fleet audit class 2b, issue #33): with
+    // JUCE_DSP_ENABLE_SNAP_TO_ZERO=0 the juce_dsp filters no longer snap
+    // their state to zero once per block, and the LinkwitzRiley/TPT
+    // crossover recursions rest on a rounding/FTZ fixed point instead of
+    // decaying: the state's per-sample update terms underflow, FTZ flushes
+    // them, and a small-but-normal state - emitting a constant resting
+    // output (~2.6e-37 measured on arm64, ~6.6e-36 on x86_64) - survives
+    // silence indefinitely. The silence-gated flush below restores exactly
+    // what the library pass provided, at engine scope and off the hot
+    // path: it can only trigger on a block of pure digital silence whose
+    // processed residue is already below the library's own snap threshold,
+    // and the input scan short-circuits at the first non-zero sample, so
+    // it costs nothing while programme material plays.
+    bool inputIsSilent = true;
+
+    for (size_t channel = 0; channel < 2 && inputIsSilent; ++channel)
+    {
+        const auto* data = block.getChannelPointer (channel);
+
+        for (size_t sample = 0; sample < numSamples; ++sample)
+        {
+            if (data[sample] != 0.0f)
+            {
+                inputIsSilent = false;
+                break;
+            }
+        }
+    }
+
+    if (inputIsSilent)
+        silentInputStreak += static_cast<juce::int64> (numSamples);
+    else
+    {
+        silentInputStreak = 0;
+        restFlushed = false;
+    }
+
     // Oversized-block guard (v0.3.0, suite convention): hosts occasionally
     // deliver blocks larger than the maximum they declared. A real chunked
     // clamp (not just an assert, which compiles out in Release) keeps every
@@ -517,6 +559,39 @@ void FirmamentEngine::process (juce::dsp::AudioBlock<float>& block) noexcept
         auto chunk = block.getSubBlock (offset, chunkSize);
         processChunk (chunk);
         offset += chunkSize;
+    }
+
+    // Rest flush (rationale above): the input was pure digital silence, so
+    // anything left at the output is the engine's own decaying (or parked)
+    // state. Once that residue falls below the threshold juce_dsp itself
+    // used to snap at, flush every recursive state and the residue with
+    // it; while any stage is still ringing (residue >= threshold) the
+    // natural decay is left untouched. reset() is audio-thread-safe by
+    // contract (see the header) and does not touch the crossfade
+    // smoothers, so wake-up behaviour is unchanged.
+    // The dwell (see restFlushDwellSamples) guarantees no in-flight audio
+    // - an impulse inside the Linear Phase FIR or the Haas delay line -
+    // can be swallowed: only after a full second of contiguous silent
+    // input AND a sub-threshold residue is the engine considered drained.
+    // The latch makes the flush a one-shot per silent stretch.
+    if (inputIsSilent && ! restFlushed && silentInputStreak >= restFlushDwellSamples)
+    {
+        auto residue = 0.0f;
+
+        for (size_t channel = 0; channel < 2; ++channel)
+        {
+            const auto* data = block.getChannelPointer (channel);
+
+            for (size_t sample = 0; sample < numSamples; ++sample)
+                residue = juce::jmax (residue, std::abs (data[sample]));
+        }
+
+        if (residue < restFlushThreshold)
+        {
+            reset();
+            block.clear();
+            restFlushed = true;
+        }
     }
 }
 
