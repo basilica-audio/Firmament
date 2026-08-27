@@ -1,13 +1,16 @@
 # Factory presets
 
-Ten factory presets ship with Firmament v0.2.0, embedded via BinaryData from
+Thirteen factory presets ship with Firmament, embedded via BinaryData from
 `presets/factory/*.json` (see `basilica-audio/nave`'s
 `docs/preset-system-notes.md` for the shared build wiring this repo copies).
-Nine are sourced starting points from `docs/design-brief.md`'s "Factory
+Most are sourced starting points from `docs/design-brief.md`'s "Factory
 Presets" section - see that document's own Honesty section for what these
 numbers are and aren't calibrated against (research/forum/manual-derived, not
-measured against any commercial widener's actual audio output). The tenth,
-**Default**, is this plugin's own certified passthrough state.
+measured against any commercial widener's actual audio output). **Default** is
+this plugin's own certified passthrough state.
+
+**Three of them are not described below yet** — *Mastering: Linear Phase Bass Mono*,
+*Three-Band Imager* and *Velvet Width*, added in v0.3.0 (basilica-audio/Firmament#40).
 
 | Preset | Category | Intent |
 |---|---|---|
