@@ -126,26 +126,41 @@ namespace TestHelpers
             return outLeft;
         }
 
-        // The platform-dependent cross-version tolerance against the frozen
-        // reference file (brief 6.1b): the reference was generated on macOS,
-        // so macOS asserts the full -140 dBFS bound; Windows gets a looser
-        // floor (libm ULP drift through IIR feedback).
+        // The ARCHITECTURE-dependent cross-version tolerance against the
+        // frozen reference file (brief 6.1b): the reference was generated on
+        // macOS on Apple Silicon, so exactly that configuration asserts the
+        // full -140 dBFS bound; every other executing architecture gets the
+        // looser floor (libm/codegen ULP drift through IIR feedback).
         //
-        // The Windows floor is -108 dBFS rather than the originally assumed
-        // -120 dBFS: MSVC's libm drifts far enough through the crossover IIR
-        // feedback paths to land at a measured peak residual of 1.24e-6
-        // (-118 dBFS) on windows-latest. -108 dBFS keeps ~3x headroom over
-        // that measurement so the bound is not marginally flaky, and is still
-        // ~50 dB below the -60 dBFS floor of anything audible. This relaxes
-        // ONLY the cross-compiler comparison against the frozen macOS
-        // reference; the same-binary bit-exactness assertions in
-        // MultibandWidthTests/StateTests are untouched and remain exact.
+        // GATED ON THE EXECUTING ARCHITECTURE, NOT THE OS (issue #36). The
+        // previous JUCE_WINDOWS gate was an OS check wearing an architecture
+        // assumption - the same misattribution issue #100 fixed in Crypta's
+        // GoldenRenderTests. What actually drifts is x86 arithmetic: the
+        // x86_64 slice of this very Universal Binary, run under Rosetta 2 on
+        // the same Mac that passes natively (`arch -x86_64 ctest`), lands at
+        // a measured peak residual of 1.207e-6 (-118 dBFS) - all but
+        // identical to MSVC's 1.24e-6 on windows-latest - while wearing
+        // JUCE_MAC. CI's Rosetta runs are pluginval/auval only today, but a
+        // local Rosetta ctest is a legitimate run and must not fail on
+        // unmodified main. Because each slice of a Universal Binary compiles
+        // separately, the compile-time JUCE_MAC && JUCE_ARM check IS the
+        // executing architecture at run time - macOS picks the slice, the
+        // slice picks the bound.
+        //
+        // BOTH VALUES ARE UNCHANGED from the OS-gated version; only WHICH
+        // configuration asserts which bound moved. The -108 dBFS floor keeps
+        // ~3x headroom over the measured x86 residuals so the bound is not
+        // marginally flaky, and is still ~50 dB below the -60 dBFS floor of
+        // anything audible. This relaxes ONLY the cross-compiler comparison
+        // against the frozen Apple Silicon reference; the same-binary
+        // bit-exactness assertions in MultibandWidthTests/StateTests are
+        // untouched and remain exact on every architecture.
         inline constexpr float crossVersionTolerance()
         {
-#if JUCE_WINDOWS
-            return 4.0e-6f; // -108 dBFS
+#if JUCE_MAC && JUCE_ARM
+            return 1.0e-7f; // -140 dBFS - the reference platform itself
 #else
-            return 1.0e-7f; // -140 dBFS
+            return 4.0e-6f; // -108 dBFS - measured x86 drift + ~3x headroom
 #endif
         }
     }
