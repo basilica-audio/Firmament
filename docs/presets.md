@@ -9,9 +9,6 @@ numbers are and aren't calibrated against (research/forum/manual-derived, not
 measured against any commercial widener's actual audio output). **Default** is
 this plugin's own certified passthrough state.
 
-**Three of them are not described below yet** — *Mastering: Linear Phase Bass Mono*,
-*Three-Band Imager* and *Velvet Width*, added in v0.3.0 (basilica-audio/Firmament#40).
-
 | Preset | Category | Intent |
 |---|---|---|
 | **Default** | Init | The certified passthrough state (every parameter at its off/default position - Width 100%, Bass Mono off, Auto Mono Safety/Multiband/Decorrelate/Haas all off), exposed as an explicit preset so there's always a one-click way back to "no coloration." Also this plugin's out-of-the-box default (see the M2 default-resolution order in `basilica-audio/nave`'s `docs/preset-system-notes.md`). |
@@ -24,8 +21,13 @@ this plugin's own certified passthrough state.
 | **Wide Pad, Full Precedence** | FX | The strong, well-known precedence-effect widening technique (Haas Mode on, Haas Time 22 ms, centrally in the researched 10-30 ms "Haas Window") for material where mono translation is a secondary concern. |
 | **Extreme Width** | FX | The manual's own documented "200% is a special-effect setting, not a default" guidance, packaged with a firm -15 dB safety net rather than left unprotected. |
 | **Subtle Openness** | Bus | A barely-there width lift (115%) for sources that just need a hint of stereo interest without drawing attention to the processing. |
+| **Mastering Linear Phase Bass Mono** | Master | Width 100% (untouched - Width plays no role here) with Bass Mono Freq 120 Hz and Bass Mono Mode set to Linear Phase - the v0.3.0 zero-phase-rotation crossover reserved for mastering/render passes rather than live tracking, since it reports 2048 samples of latency at 48 kHz. Auto Mono Safety on at its default -9.1 dB floor, single-band rather than Multiband. For final bass-mono duties where phase purity through the crossover matters more than a live, latency-free toggle. |
+| **Three Band Imager** | Widening | A narrow-to-wide curve across all three v0.3.0 bands - Low Width 40% below the 110 Hz Bass Mono Freq, Width 110% in the mid band, High Width 140% above the 2500 Hz High Split - voiced through the Phase Matched Bass Mono Mode, Multiband Auto Mono Safety and the faster Dynamic safety response. The showcase for the plugin's new three-band architecture. |
+| **Velvet Width** | Widening | A moderate Width 120% lift across the full spectrum (no Bass Mono split engaged) layered with 60% Velvet Dense Decorrelate - the v0.3.0 mono-sum-safe decorrelation mode - plus Width Compensation on so the extra width doesn't also add level, and the faster Dynamic safety response. The showcase for Velvet decorrelation as a fully mono-safe, general-purpose alternative to Classic Decorrelate. |
 
 None of the presets touch Decorrelate and Haas Mode at the same time (they
 are mutually exclusive by design - see `docs/design-brief.md`); "Mono-Safe
-Air" and "Wide Pad, Full Precedence" each showcase one of the two
-alternative-widening techniques on its own.
+Air", "Wide Pad, Full Precedence" and "Velvet Width" each showcase one of the
+two alternative-widening techniques on its own - Mono-Safe Air and Velvet
+Width via Classic and Velvet Dense Decorrelate respectively, Wide Pad, Full
+Precedence via Haas Mode.
